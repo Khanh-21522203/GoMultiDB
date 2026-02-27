@@ -100,7 +100,7 @@ func (e *Engine) ApplyIntents(ctx context.Context, txnID [16]byte, commitHT uint
 	}
 
 	toRegular := rocks.WriteBatch{Ops: make([]rocks.KV, 0)}
-	deleteKeys := make([][]byte, 0)
+	toDeleteIntents := rocks.WriteBatch{Ops: make([]rocks.KV, 0)}
 	processed := 0
 
 	for it.Next() {
@@ -121,7 +121,10 @@ func (e *Engine) ApplyIntents(ctx context.Context, txnID [16]byte, commitHT uint
 			return false, err
 		}
 		toRegular.Ops = append(toRegular.Ops, rocks.KV{Key: makeVersionedKey(rec.Key, commitHT), Value: rec.Value})
-		deleteKeys = append(deleteKeys, append([]byte(nil), intentKey...), append([]byte(nil), idx.Key...))
+		toDeleteIntents.Ops = append(toDeleteIntents.Ops,
+			rocks.KV{Key: intentKey, Value: nil},
+			rocks.KV{Key: idx.Key, Value: nil},
+		)
 		processed++
 	}
 	if err := it.Err(); err != nil {
@@ -130,7 +133,7 @@ func (e *Engine) ApplyIntents(ctx context.Context, txnID [16]byte, commitHT uint
 	if err := e.store.ApplyWriteBatch(ctx, rocks.RegularDB, toRegular); err != nil {
 		return false, err
 	}
-	if err := e.removeKeys(ctx, deleteKeys); err != nil {
+	if err := e.removeKeys(ctx, toDeleteIntents); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -144,31 +147,35 @@ func (e *Engine) RemoveIntents(ctx context.Context, txnID [16]byte, limit int) (
 	if err != nil {
 		return false, err
 	}
-	deleteKeys := make([][]byte, 0)
+	delBatch := rocks.WriteBatch{Ops: make([]rocks.KV, 0)}
 	processed := 0
 	for it.Next() {
 		if processed >= limit {
-			return false, e.removeKeys(ctx, deleteKeys)
+			return false, e.removeKeys(ctx, delBatch)
 		}
 		idx := it.Item()
 		intentKey := idx.Value
-		deleteKeys = append(deleteKeys, append([]byte(nil), intentKey...), append([]byte(nil), idx.Key...))
+		delBatch.Ops = append(delBatch.Ops,
+			rocks.KV{Key: intentKey, Value: nil},
+			rocks.KV{Key: idx.Key, Value: nil},
+		)
 		processed++
 	}
 	if err := it.Err(); err != nil {
 		return false, err
 	}
-	if err := e.removeKeys(ctx, deleteKeys); err != nil {
+	if err := e.removeKeys(ctx, delBatch); err != nil {
 		return false, err
 	}
 	return true, nil
 }
 
-func (e *Engine) removeKeys(ctx context.Context, keys [][]byte) error {
-	if len(keys) == 0 {
+func (e *Engine) removeKeys(ctx context.Context, batch rocks.WriteBatch) error {
+	if len(batch.Ops) == 0 {
 		return nil
 	}
-	return e.store.DeleteKeys(ctx, rocks.IntentsDB, keys)
+	// memory store interprets nil value as delete via explicit overwrite contract.
+	return e.store.ApplyWriteBatch(ctx, rocks.IntentsDB, batch)
 }
 
 func (e *Engine) Read(ctx context.Context, key []byte) ([]byte, bool, error) {

@@ -31,7 +31,6 @@ type Iterator interface {
 
 type Store interface {
 	ApplyWriteBatch(ctx context.Context, kind DBKind, wb WriteBatch) error
-	DeleteKeys(ctx context.Context, kind DBKind, keys [][]byte) error
 	Get(ctx context.Context, kind DBKind, key []byte) ([]byte, bool, error)
 	NewIterator(ctx context.Context, kind DBKind, prefix []byte) (Iterator, error)
 }
@@ -54,17 +53,11 @@ func (s *MemoryStore) ApplyWriteBatch(_ context.Context, kind DBKind, wb WriteBa
 	defer s.mu.Unlock()
 	target := s.pick(kind)
 	for _, op := range wb.Ops {
+		if op.Value == nil {
+			delete(target, string(op.Key))
+			continue
+		}
 		target[string(op.Key)] = append([]byte(nil), op.Value...)
-	}
-	return nil
-}
-
-func (s *MemoryStore) DeleteKeys(_ context.Context, kind DBKind, keys [][]byte) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	target := s.pick(kind)
-	for _, k := range keys {
-		delete(target, string(k))
 	}
 	return nil
 }

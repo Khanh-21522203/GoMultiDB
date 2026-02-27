@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"os"
 	"path/filepath"
 	"sort"
@@ -20,6 +21,11 @@ type Entry struct {
 	OpID       types.OpID `json:"op_id"`
 	HybridTime uint64     `json:"hybrid_time"`
 	Payload    []byte     `json:"payload"`
+}
+
+type diskRecord struct {
+	Entry Entry  `json:"entry"`
+	CRC32 uint32 `json:"crc32"`
 }
 
 type appendRequest struct {
@@ -168,6 +174,13 @@ func (l *Log) IndexLookup(op types.OpID) (segment string, offset int64, ok bool)
 	return p.Segment, p.Offset, true
 }
 
+func (l *Log) HasOpID(op types.OpID) bool {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	_, ok := l.index[op]
+	return ok
+}
+
 func (l *Log) Close() error {
 	var err error
 	l.once.Do(func() {
@@ -196,11 +209,11 @@ func (l *Log) appendAndSync(entries []Entry) error {
 	defer l.mu.Unlock()
 
 	for _, e := range entries {
-		b, err := json.Marshal(e)
+		r, err := marshalRecord(e)
 		if err != nil {
 			return err
 		}
-		rec := append(b, '\n')
+		rec := append(r, '\n')
 		if l.sizeBytes+int64(len(rec)) > l.cfg.MaxSegmentBytes {
 			if err := l.rotateLocked(); err != nil {
 				return err
@@ -237,33 +250,25 @@ func (l *Log) recoverAll() error {
 
 	for _, seg := range segments {
 		path := filepath.Join(l.cfg.Dir, seg)
-		f, err := os.Open(path)
+		validUntil, segEntries, err := recoverSegment(path)
 		if err != nil {
-			return fmt.Errorf("open segment %s: %w", seg, err)
+			return err
 		}
-		s := bufio.NewScanner(f)
+		if validUntil < 0 {
+			validUntil = 0
+		}
+		if err := os.Truncate(path, validUntil); err != nil {
+			return fmt.Errorf("truncate corrupted segment %s: %w", seg, err)
+		}
+
 		var offset int64
-		for s.Scan() {
-			line := append([]byte(nil), s.Bytes()...)
-			if len(line) == 0 {
-				offset++
-				continue
-			}
-			var e Entry
-			if err := json.Unmarshal(line, &e); err != nil {
-				_ = f.Close()
-				return fmt.Errorf("recover wal entry from %s: %w", seg, err)
-			}
+		for _, e := range segEntries {
+			rec, _ := marshalRecord(e)
 			l.entries = append(l.entries, e)
 			l.lastOp = e.OpID
 			l.index[e.OpID] = indexPos{Segment: seg, Offset: offset}
-			offset += int64(len(line) + 1)
+			offset += int64(len(rec) + 1)
 		}
-		if err := s.Err(); err != nil {
-			_ = f.Close()
-			return err
-		}
-		_ = f.Close()
 	}
 
 	last := segments[len(segments)-1]
@@ -273,6 +278,39 @@ func (l *Log) recoverAll() error {
 	}
 	l.segmentNo = segNo
 	return nil
+}
+
+func recoverSegment(path string) (validUntil int64, entries []Entry, err error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, nil, fmt.Errorf("open segment %s: %w", path, err)
+	}
+	defer f.Close()
+
+	s := bufio.NewScanner(f)
+	var offset int64
+	for s.Scan() {
+		line := append([]byte(nil), s.Bytes()...)
+		if len(line) == 0 {
+			offset++
+			validUntil = offset
+			continue
+		}
+		rec, ok, derr := decodeRecord(line)
+		if derr != nil {
+			return 0, nil, derr
+		}
+		if !ok {
+			return offset, entries, nil
+		}
+		entries = append(entries, rec.Entry)
+		offset += int64(len(line) + 1)
+		validUntil = offset
+	}
+	if err := s.Err(); err != nil {
+		return 0, nil, err
+	}
+	return validUntil, entries, nil
 }
 
 func (l *Log) openCurrentSegment() error {
@@ -352,4 +390,29 @@ func parseSegmentNo(name string) (int, error) {
 
 func currentSegmentName(no int) string {
 	return fmt.Sprintf("segment-%06d.wal", no)
+}
+
+func marshalRecord(e Entry) ([]byte, error) {
+	entryBytes, err := json.Marshal(e)
+	if err != nil {
+		return nil, err
+	}
+	rec := diskRecord{Entry: e, CRC32: crc32.ChecksumIEEE(entryBytes)}
+	return json.Marshal(rec)
+}
+
+func decodeRecord(line []byte) (diskRecord, bool, error) {
+	var rec diskRecord
+	if err := json.Unmarshal(line, &rec); err != nil {
+		return diskRecord{}, false, nil
+	}
+	entryBytes, err := json.Marshal(rec.Entry)
+	if err != nil {
+		return diskRecord{}, false, err
+	}
+	crc := crc32.ChecksumIEEE(entryBytes)
+	if crc != rec.CRC32 {
+		return diskRecord{}, false, nil
+	}
+	return rec, true, nil
 }

@@ -1,35 +1,26 @@
-# Phase 3 Checkpoint — Tablet Lifecycle & Partitioning (Pragmatic)
+# Phase 4 Checkpoint — Metadata & Control Plane (Pragmatic)
 
 ## Completed
 
-- [x] Partition map split correctness: parent is replaced by children in active routing map.
-- [x] Partition routing safety: avoid routing to non-running partitions.
-- [x] Partition map integrity: reject duplicate tablet IDs.
-- [x] Tablet split rollback: on partition-map registration failure, child peers are removed and parent is restored.
-- [x] Tablet lifecycle guardrails: centralized transition validation (`transitionPeerState` / `isTransitionAllowed`).
-- [x] Split finalization safety: parent state-version check before tombstoning.
-- [x] Hard delete lifecycle alignment: enforce `Deleting -> Deleted` before removal.
-- [x] Remote bootstrap from failed-state path hardened (`Failed -> RemoteBootstrapping -> Running`).
-- [x] Master-directive precondition hooks added with backward-compatible wrappers:
-  - `DeleteTabletWithExpectedStateVersion`
-  - `SplitTabletWithExpectedStateVersion`
-  - `RemoteBootstrapTabletWithExpectedStateVersion`
-- [x] Prevented split-parent resurrection: reject remote bootstrap for tombstoned split parent with active children.
-- [x] Added/updated unit tests for split correctness, rollback behavior, lifecycle conflicts, hard delete flow, failed-state bootstrap, precondition mismatch, and split-parent protection.
-- [x] Lint check on touched files is clean.
-- [x] `go test ./...` passes.
+- [x] Catalog foundation with leader-gated, idempotent `CreateTable`/`GetTable`.
+- [x] Table state-transition guardrails in catalog manager.
+- [x] Heartbeat + TS registry skeleton with restart detection and tablet-report sequencing.
+- [x] Catalog reconciliation bridge (`ApplyTabletReport`) with leader gating.
+- [x] Concrete in-memory reconcile sink for tablet placement/status.
+- [x] Basic directive planner (`CREATE_TABLET` / `DELETE_TABLET`) using target RF rules.
+- [x] Planner output wired into heartbeat `TabletActions`.
+- [x] Per-reporter action filtering (only tablets from current report entries).
+- [x] TS liveness query (`ListStale`) with timeout-based stale detection.
+- [x] Stale-aware planning policy hooks:
+  - ignore stale replicas in planning input,
+  - skip directive generation on heartbeats from reporters that were stale.
+- [x] Focused unit tests added across catalog + heartbeat flows.
+- [x] Lint clean and `go test ./...` passing.
 
-## Phase 3 Exit Criteria Status
+## Deferred (intentional for side-project scope)
 
-- [x] Tablet split correctness and routing pass.
-- [x] Lagging/failed replica remote bootstrap recovery behavior covered at current in-memory scope.
+Moved to `tasks/deferred.md` for centralized tracking across phases.
 
-## Deferred (intentional, bounded)
+## Recommendation
 
-- [ ] Durable on-disk lifecycle markers + restart recovery orchestration (next bounded slice).
-- [ ] Heavier integration recovery scenarios across process restart and disk replay.
-
-## Notes
-
-- Scope remained tight per `.cursorrules`: minimal impact, no unrelated refactor, no new global state.
-- Current baseline is stable and ready to start Phase 4 planning.
+- Phase 4 is **done enough** for pragmatic scope and safe to continue to Phase 5 scaffolding.

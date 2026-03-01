@@ -138,12 +138,11 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	s.listener = ln
+	httpSrv := s.httpSrv
 
-	go func() {
-
-		_ = s.httpSrv.Serve(ln)
-
-	}()
+	go func(srv *http.Server, listener net.Listener) {
+		_ = srv.Serve(listener)
+	}(httpSrv, ln)
 
 	select {
 

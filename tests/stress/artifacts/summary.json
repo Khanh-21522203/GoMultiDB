@@ -1,0 +1,48 @@
+{
+  "generated_at": "2026-03-07T01:37:51.4734556Z",
+  "seed": 20260307,
+  "results": [
+    {
+      "scenario": "S1_steady_state",
+      "passed": true,
+      "duration_ms": 25,
+      "throughput": 30897.574540398582,
+      "retry_ratio": 0,
+      "lag_upper": 0,
+      "checkpoint_staleness": 0,
+      "details": null
+    },
+    {
+      "scenario": "S2_bursty_with_faults",
+      "passed": true,
+      "duration_ms": 7,
+      "throughput": 27593.438280376926,
+      "retry_ratio": 0.04,
+      "lag_upper": 0,
+      "checkpoint_staleness": 0,
+      "details": null
+    },
+    {
+      "scenario": "S3_scale_out",
+      "passed": true,
+      "duration_ms": 12,
+      "throughput": 32929.12828365151,
+      "retry_ratio": 0,
+      "lag_upper": 10,
+      "checkpoint_staleness": 10,
+      "details": null
+    },
+    {
+      "scenario": "S4_soak",
+      "passed": true,
+      "duration_ms": 10000,
+      "throughput": 6028.258378597685,
+      "retry_ratio": 0,
+      "lag_upper": 0,
+      "checkpoint_staleness": 0,
+      "details": null
+    }
+  ],
+  "passed": true,
+  "top_offenders": []
+}

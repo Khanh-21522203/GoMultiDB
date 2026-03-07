@@ -1,0 +1,13 @@
+{
+  "seed": 20260307,
+  "scenario": "S1_steady_state",
+  "iterations": 100,
+  "streams": 4,
+  "events_per_stream": 200,
+  "fault_every_n": 25,
+  "soak_duration_seconds": 10,
+  "threshold_throughput": 100,
+  "threshold_retry_ratio": 0.2,
+  "threshold_lag_upper": 10,
+  "threshold_checkpoint_stale": 50
+}

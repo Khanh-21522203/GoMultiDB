@@ -1,0 +1,16 @@
+{
+  "started_at": "2026-03-07T01:35:55.9775981Z",
+  "finished_at": "2026-03-07T01:37:35.5212242Z",
+  "passed": true,
+  "scenarios": {
+    "cdc_stream_lifecycle": "passed",
+    "compose_lifecycle": "passed",
+    "controlplane_state_transitions": "passed",
+    "failure_recovery_restart_during_apply": "passed",
+    "failure_recovery_scheduler_fault": "passed",
+    "query_layer_smoke": "passed",
+    "restart_recovery_persistence": "passed",
+    "xcluster_apply_e2e": "passed"
+  },
+  "details": []
+}

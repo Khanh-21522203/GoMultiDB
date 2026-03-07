@@ -1,0 +1,6 @@
+multidb-tserver-1  | 2026/03/07 01:37:10 tserver started node=tserver-1 rpc=0.0.0.0:9101
+multidb-master     | 2026/03/07 01:36:59 master started node=master-1 rpc=0.0.0.0:7100
+multidb-tserver-1  | 2026/03/07 01:37:23 tserver stopped node=tserver-1
+multidb-tserver-1  | 2026/03/07 01:37:24 tserver started node=tserver-1 rpc=0.0.0.0:9101
+multidb-tserver-3  | 2026/03/07 01:37:10 tserver started node=tserver-3 rpc=0.0.0.0:9103
+multidb-tserver-2  | 2026/03/07 01:37:10 tserver started node=tserver-2 rpc=0.0.0.0:9102

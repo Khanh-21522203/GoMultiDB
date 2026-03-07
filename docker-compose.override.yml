@@ -1,0 +1,38 @@
+version: "3.9"
+
+services:
+  master:
+    environment:
+      - MULTIDB_PROFILE=${MULTIDB_PROFILE:-dev}
+
+  tserver-1:
+    environment:
+      - MULTIDB_PROFILE=${MULTIDB_PROFILE:-dev}
+
+  tserver-2:
+    environment:
+      - MULTIDB_PROFILE=${MULTIDB_PROFILE:-dev}
+
+  tserver-3:
+    environment:
+      - MULTIDB_PROFILE=${MULTIDB_PROFILE:-dev}
+
+  # Optional stress profile service placeholder (enable with --profile stress)
+  loadgen:
+    profiles: ["stress"]
+    image: alpine:3.21
+    command: ["sh", "-c", "echo stress profile placeholder && sleep infinity"]
+    networks:
+      - multidb-net
+
+  # Optional fault profile service placeholder (enable with --profile fault)
+  toxiproxy:
+    profiles: ["fault"]
+    image: alpine:3.21
+    command: ["sh", "-c", "echo fault profile placeholder && sleep infinity"]
+    networks:
+      - multidb-net
+
+networks:
+  multidb-net:
+    external: false

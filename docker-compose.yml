@@ -1,0 +1,143 @@
+version: "3.9"
+
+name: multidb-cluster
+
+services:
+  master:
+    build:
+      context: .
+      dockerfile: Dockerfile.master
+    image: multidb/master:local
+    container_name: multidb-master
+    command:
+      - --node-id=${MASTER_NODE_ID:-master-1}
+      - --rpc-addr=0.0.0.0:${MASTER_RPC_PORT:-7100}
+      - --http-addr=0.0.0.0:${MASTER_HTTP_PORT:-7000}
+    ports:
+      - "${MASTER_RPC_PORT:-7100}:${MASTER_RPC_PORT:-7100}"
+      - "${MASTER_HTTP_PORT:-7000}:${MASTER_HTTP_PORT:-7000}"
+    volumes:
+      - master-data:/var/lib/multidb/master
+    networks:
+      - multidb-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 ${MASTER_RPC_PORT:-7100}"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: "${MASTER_CPU_LIMIT:-1.0}"
+          memory: ${MASTER_MEM_LIMIT:-512M}
+
+  tserver-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.tserver
+    image: multidb/tserver:local
+    container_name: multidb-tserver-1
+    command:
+      - --node-id=tserver-1
+      - --rpc-addr=0.0.0.0:9101
+      - --http-addr=0.0.0.0:9001
+    ports:
+      - "9101:9101"
+      - "9001:9001"
+    volumes:
+      - tserver-1-data:/var/lib/multidb/tserver
+    networks:
+      - multidb-net
+    depends_on:
+      master:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 9101"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: "${TSERVER_CPU_LIMIT:-1.0}"
+          memory: ${TSERVER_MEM_LIMIT:-512M}
+
+  tserver-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.tserver
+    image: multidb/tserver:local
+    container_name: multidb-tserver-2
+    command:
+      - --node-id=tserver-2
+      - --rpc-addr=0.0.0.0:9102
+      - --http-addr=0.0.0.0:9002
+    ports:
+      - "9102:9102"
+      - "9002:9002"
+    volumes:
+      - tserver-2-data:/var/lib/multidb/tserver
+    networks:
+      - multidb-net
+    depends_on:
+      master:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 9102"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: "${TSERVER_CPU_LIMIT:-1.0}"
+          memory: ${TSERVER_MEM_LIMIT:-512M}
+
+  tserver-3:
+    build:
+      context: .
+      dockerfile: Dockerfile.tserver
+    image: multidb/tserver:local
+    container_name: multidb-tserver-3
+    command:
+      - --node-id=tserver-3
+      - --rpc-addr=0.0.0.0:9103
+      - --http-addr=0.0.0.0:9003
+    ports:
+      - "9103:9103"
+      - "9003:9003"
+    volumes:
+      - tserver-3-data:/var/lib/multidb/tserver
+    networks:
+      - multidb-net
+    depends_on:
+      master:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 9103"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: "${TSERVER_CPU_LIMIT:-1.0}"
+          memory: ${TSERVER_MEM_LIMIT:-512M}
+
+networks:
+  multidb-net:
+    driver: bridge
+
+volumes:
+  master-data:
+  tserver-1-data:
+  tserver-2-data:
+  tserver-3-data:

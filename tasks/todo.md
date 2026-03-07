@@ -1,86 +1,167 @@
-# Phase 5 Kickoff — SQL/CQL Query Layers (Pragmatic)
+# Deployment + Real-Infra Integration & Stress Testing Plan
 
 ## Context
 
-- Phase 4 control-plane scaffolding is in place and green.
-- Deferred depth items are tracked in `tasks/deferred.md`.
-- Phase 5 starts with minimal integration surfaces before deep protocol compatibility.
+- Core replication/query/control-plane scaffolding is implemented and test-backed.
+- Next objective is production-like deployment + real infrastructure integration coverage.
+- This plan focuses on executable artifacts (compose stack, test harness, stress suite, CI hooks).
 
-## P5.1 YSQL Process Control Skeleton (first)
+---
 
-- [x] Add `internal/query/ysql` package with process coordinator interface and local stub implementation.
-- [x] Add start/stop/health lifecycle API aligned with `plan-ysql-query-layer.md`.
-- [x] Integrate coordinator hooks into tserver runtime entrypoints (feature-flag guarded, no external PG process yet).
-- [x] Add focused unit tests for runtime integration and health semantics.
-- [x] Lint clean + `go test ./...` passing.
+## Track A — Docker Compose Deployment (Detailed)
 
-## P5.2 PgGate Bridge Session Skeleton
+### A1. Containerization Foundations
+- [x] Add `Dockerfile.master` for `cmd/master` image build.
+- [x] Add `Dockerfile.tserver` for `cmd/tserver` image build.
+- [x] Add common base image strategy (multi-stage build, static/minimal runtime image).
+- [x] Add runtime env/config contract for both roles (ports, bind addresses, node ids, data dirs).
+- [x] Add healthcheck command strategy per service (HTTP or lightweight probe).
 
-- [x] Add `internal/query/pggate` package with session model (`session id`, `catalog version`, `table cache`, `pending writes`).
-- [x] Add minimal operation structs for read/write requests (shape only; no deep execution).
-- [x] Add request validation + idempotency-safe session operations.
-- [x] Add focused unit tests for session lifecycle and cache invalidation triggers.
-- [x] Lint clean + `go test ./...` passing.
+### A2. Compose Topology Definition
+- [x] Create `docker-compose.yml` for baseline cluster topology:
+  - [x] 1 master
+  - [x] 3 tservers
+  - [x] shared network
+  - [x] persistent volumes per node
+- [x] Expose required ports for RPC/admin/diagnostic endpoints.
+- [x] Add deterministic startup ordering (`depends_on` + healthcheck readiness).
+- [x] Add restart policy and resource limits (CPU/memory) defaults.
 
-## P5.3 YCQL Server Surface Skeleton
+### A3. Config Profiles & Overrides
+- [x] Add `docker-compose.override.yml` for local dev overrides.
+- [x] Add optional profile for stress mode (higher replicas/resources).
+- [x] Add optional profile for fault mode (intentional delay/latency injection placeholders).
+- [x] Add environment file template (`.env.example`) with all compose vars documented.
 
-- [x] Add `internal/query/ycql` package with server config + lifecycle stubs.
-- [x] Add minimal request routing surface for future protocol handling.
-- [x] Add focused tests for startup/config validation and health.
-- [x] Lint clean + `go test ./...` passing.
+### A4. Operational Tooling for Compose
+- [x] Add scripts:
+  - [x] `scripts/compose-up.ps1`
+  - [x] `scripts/compose-down.ps1`
+  - [x] `scripts/compose-reset.ps1` (safe volume cleanup)
+  - [x] `scripts/compose-logs.ps1` (filtered tail by service)
+- [x] Add `scripts/compose-status.ps1` to summarize service health.
+- [x] Add smoke checks script to validate cluster readiness after startup.
 
-## P5.4 Transaction Boundaries & Runtime Control Surface
+### A5. Compose Docs & Runbook
+- [x] Add `tasks/deployment-compose-runbook.md`:
+  - [x] startup flow
+  - [x] expected healthy states
+  - [x] troubleshooting guide (ports, stale volumes, crash loops)
+  - [x] teardown/reset guidance
+- [x] Add command snippets for Windows PowerShell usage.
 
-- [x] Add minimal PgGate transaction boundary skeleton (`BeginTxn`, `CommitTxn`, `AbortTxn`) bound to session state.
-- [x] Add explicit YSQL runtime control/status API (`StartYSQL`, `StopYSQL`, `GetYSQLStatus`) per plan interface.
-- [x] Add focused tests for transaction state transitions and runtime status semantics.
-- [x] Lint clean + `go test ./...` passing (validated from terminal output).
+---
 
-## P5.5 YCQL Prepared Statement Session Skeleton
+## Track B — Real-Infra Integration Tests (Critical Paths)
 
-- [x] Add YCQL session manager with per-connection state (`prepared`, `keyspace`, `consistency`, `schema version`).
-- [x] Add minimal `Prepare` + `ExecutePrepared` flow with schema-version conflict signaling.
-- [x] Add explicit prepared invalidation on schema version change.
-- [x] Add focused unit tests for session lifecycle, prepare/execute, and invalidation/conflict paths.
-- [x] Lint clean + `go test ./...` passing (validated from terminal output).
+### B1. Integration Harness Architecture
+- [x] Add dedicated integration test package/folder (`tests/integration/infra`).
+- [x] Define harness lifecycle helpers:
+  - [x] start compose stack
+  - [x] wait for health readiness
+  - [x] seed baseline data
+  - [x] clean shutdown + artifact capture
+- [x] Add deterministic timeout/retry wrappers for infra tests.
 
-## P5.6 Batch + Savepoint Skeleton Hardening
+### B2. Critical Path Coverage Matrix
+- [x] Define and implement integration tests for:
+  - [x] server lifecycle: start/stop/health transitions
+  - [x] CDC stream create/getChanges/setCheckpoint/delete lifecycle
+  - [x] xCluster apply loop end-to-end with checkpoint advance
+  - [x] control-plane stream/job pause/resume/stop behavior against running infra
+  - [x] query-layer smoke through running services (PgGate/YCQL minimal paths)
+  - [x] restart recovery using persisted checkpoint/control-plane metadata
+- [x] Add assertions for canonical error behavior on bad requests.
 
-- [x] Add YCQL batch request routing surface with validation (`RouteBatch`) and focused tests.
-- [x] Add PgGate savepoint primitives (`CreateSavepoint`, `RollbackToSavepoint`, `ReleaseSavepoint`) with focused tests.
-- [x] Fix RPC start goroutine nil-deref race in `internal/rpc/server.go` by serving with captured local server pointer.
-- [x] Lint clean + `go test ./...` passing (validated from terminal output).
+### B3. Failure/Recovery Integration Paths
+- [x] Add tests for:
+  - [x] transient service restart during active apply
+  - [x] delayed/unavailable node then recovery (deterministic restart/rejoin path)
+  - [x] checkpoint persistence continuity after container restart
+  - [x] scheduler fault injection with real infra orchestration context
+- [x] Ensure each failure test has deterministic pass/fail condition.
 
-## P5.7 Bridge/API Execution Skeleton
+### B4. Integration Test Artifacts
+- [x] Capture logs/artifacts on failures:
+  - [x] compose service logs
+  - [x] selected status snapshots (control-plane/observability)
+  - [x] test-run summary report
+- [x] Add machine-readable summary output (JSON/TXT) for CI parsing.
 
-- [x] Add PgGate minimal read/write execution entrypoints that consume current session + txn state (no storage engine integration yet).
-- [x] Add YCQL session binding into server path (connection-scoped session lookup + prepared execute dispatch).
-- [x] Add focused tests for execution-surface validation and idempotent behavior.
-- [x] Lint clean + `go test ./...` passing (validated from terminal output).
+---
 
-## P5.8 Retry & Prepared Metrics Skeleton
+## Track C — Stress & Load Testing
 
-- [x] Add PgGate retry/restart conflict counters on read/write skeleton conflict paths.
-- [x] Add YCQL prepared cache stats (hit/miss/invalidation) with accessors.
-- [x] Add focused unit tests for counters and conflict paths.
-- [x] Lint clean + `go test ./...` passing (validated from terminal output).
+### C1. Stress Harness Setup
+- [x] Add stress test package (`tests/stress`).
+- [x] Add configurable load generator for:
+  - [x] CDC event append/poll pressure
+  - [x] xCluster apply throughput pressure
+  - [x] control-plane job/stream scaling pressure
+- [x] Add deterministic seed + scenario config file.
 
-## P5.9 Idempotency Hooks & Connection Guardrails
+### C2. Stress Scenarios (Critical)
+- [x] Scenario S1: steady-state high-throughput CDC/apply.
+- [x] Scenario S2: bursty load with intermittent injected faults.
+- [x] Scenario S3: scale-out streams/jobs (cardinality growth).
+- [x] Scenario S4: long-running soak (memory/leak/stability check window).
 
-- [x] Add PgGate write-path idempotency hook (`ExecWriteWithRequest`) with fingerprint conflict handling.
-- [x] Add YCQL connection limit guardrail (`MaxConnections`) with open/close semantics.
-- [x] Add focused tests for idempotency conflict and connection cap behavior.
-- [x] Lint clean + `go test ./...` passing (validated from terminal output).
+### C3. Stress Metrics & Acceptance Thresholds
+- [x] Define thresholds for:
+  - [x] sustained throughput
+  - [x] retry/failure ratios
+  - [x] lag upper bounds
+  - [x] checkpoint staleness
+- [x] Add threshold assertions in stress result parser.
+- [x] Add pass/fail summary output with top offenders.
 
-## P5.10 Read Idempotency + YCQL Status Snapshot
+### C4. Stress Execution Scripts
+- [x] Add scripts:
+  - [x] `scripts/stress-run.ps1`
+  - [x] `scripts/stress-report.ps1`
+- [x] Add quick stress profile (developer machine friendly).
+- [x] Add standard stress profile (CI/nightly friendly).
 
-- [x] Add PgGate read-path idempotency hook (`ExecReadWithRequest`) with fingerprint conflict handling.
-- [x] Add YCQL status snapshot API (started, max connections, active connections, prepared stats).
-- [x] Add focused tests for read idempotency and status reporting semantics.
-- [x] Lint clean + `go test ./...` passing (validated from terminal output).
+---
 
-## P5 Exit for this iteration (pragmatic)
+## Track D — CI/Automation Integration
 
-- [x] YSQL/PgGate/YCQL package boundaries established.
-- [x] Lifecycle and session scaffolding test-backed.
-- [x] No protocol compatibility claims yet (next bounded iterations).
+### D1. Test Tiering
+- [x] Keep existing quick/standard unit tiers.
+- [x] Add infra-integration tier command entrypoint.
+- [x] Add stress tier command entrypoint (gated/nightly).
+
+### D2. Pipeline Contract (scaffold)
+- [x] Define pipeline order:
+  - [x] lint
+  - [x] unit quick
+  - [x] unit standard
+  - [x] integration infra
+  - [x] optional stress/nightly
+- [x] Define artifact retention policy for failing integration/stress jobs.
+
+### D3. Flakiness Controls
+- [x] Add retry budget policy for infra bring-up failures.
+- [x] Add flaky-test quarantine checklist/process.
+- [x] Add deterministic random seed logging in all stress tests.
+
+---
+
+## Track E — Verification & Exit Gates
+
+### E1. Mandatory Verification
+- [x] `go test ./...` passes.
+- [x] Compose stack boots and health checks pass locally.
+- [x] Critical-path integration suite passes.
+- [x] At least one stress scenario passes with thresholds.
+- [x] Lints clean on touched files.
+
+### E2. Documentation Completion
+- [x] Deployment runbook finalized.
+- [x] Integration matrix documented.
+- [x] Stress thresholds and interpretation guidance documented.
+
+### E3. Final Readiness Review
+- [x] Capture known limitations/non-goals.
+- [x] Record deferred items for next iteration.
+- [x] Produce final deployment + testing readiness summary.

@@ -1,17 +1,12 @@
 package raft_test
 
 import (
-	"context"
-
-	"testing"
-
-	"time"
-
 	"GoMultiDB/internal/common/types"
-
 	"GoMultiDB/internal/raft"
-
 	"GoMultiDB/internal/wal"
+	"context"
+	"testing"
+	"time"
 )
 
 func newConsensusForTest(t *testing.T, nodeID string) (*raft.Consensus, *wal.Log) {

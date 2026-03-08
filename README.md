@@ -5,6 +5,7 @@ A pragmatic distributed database prototype in Go.
 This repository focuses on **incremental, test-backed system construction** across:
 - server lifecycle and RPC foundations,
 - storage/consensus/query scaffolding,
+- master catalog, heartbeat, and snapshotting,
 - CDC + xCluster replication workflows,
 - control-plane operations,
 - deployment, integration, stress, and CI-style verification.
@@ -15,18 +16,38 @@ This repository focuses on **incremental, test-backed system construction** acro
 
 The project has implemented and validated:
 
-- Core server/runtime + RPC plumbing (`cmd/master`, `cmd/tserver`, `internal/server`, `internal/rpc`)
-- Replication stack scaffolding:
-  - CDC store/service/checkpoint flows
-  - xCluster apply loop with retry/idempotency
-  - control-plane stream/job registry + scheduler
+**Master Control Plane:**
+- Catalog manager with sys.catalog backing (`internal/master/catalog`, `internal/master/syscatalog`)
+- Heartbeat service with tablet tracking and leader election (`internal/master/heartbeat`)
+- Distributed snapshot coordinator (`internal/master/snapshot`)
+- Load balancer with placement planning (`internal/master/balancer`)
+- Snapshotting and backup orchestration (create/delete/restore snapshots)
+
+**Tablet Lifecycle:**
+- Tablet manager with durable state markers (`internal/tablet/manager`, `internal/tablet/meta_store`)
+- Remote bootstrap client and session (`internal/tablet/remotebootstrap`)
+- Tablet snapshot handlers for checkpoint/restore (`internal/tablet/snapshot`)
+
+**Replication Stack:**
+- CDC store/service/checkpoint flows
+- xCluster apply loop with retry/idempotency
+- Control-plane stream/job registry + scheduler
 - File-backed persistence for critical metadata surfaces
-- Observability scaffolding (metrics/health/admin handlers)
-- Deployment and testing toolchain:
-  - Docker Compose cluster
-  - real-infra integration harness
-  - stress harness and thresholded reports
-  - CI-style test orchestration scripts
+
+**Query Layer Scaffolding:**
+- SQL/CQL coordinators and dispatch foundations
+- PgGate bridge with executor framework
+- YSQL/YCQL server stubs with health status
+
+**Observability:**
+- Metrics/health/admin handlers
+- Stress harness and thresholded reports
+
+**Deployment & Testing:**
+- Docker Compose cluster
+- Real-infra integration harness
+- In-process test cluster (`internal/testing/cluster`)
+- CI-style test orchestration scripts
 
 > Note: this is a scaffold/hardening-oriented system build, not a production-certified database.
 
@@ -42,8 +63,10 @@ Primary internal domains:
 - `internal/rpc` — transport/contracts
 - `internal/server` — runtime/lifecycle/config
 - `internal/raft`, `internal/wal`, `internal/docdb`, `internal/storage/rocks`
-- `internal/query/{sql,cql,pggate}`
-- `internal/replication/{cdc,xcluster,controlplane,observability}`
+- `internal/query/{sql,cql,pggate}` — query layer foundations
+- `internal/replication/{cdc,xcluster,controlplane,observability}` — replication stack
+- `internal/master/{catalog,heartbeat,snapshot,balancer,syscatalog,registry}` — master control plane
+- `internal/tablet/{manager,remotebootstrap,snapshot}` — tablet lifecycle and operations
 
 ---
 
@@ -108,7 +131,41 @@ EvaluateRetention
                             -> Start/Complete/Fail bootstrap lifecycle
 ```
 
-### 4) Deployment & Verification Flow
+### 4) Distributed Snapshotting Flow
+
+```text
+SnapshotCoordinator.CreateSnapshot(tabletIDs)
+  -> TabletRPCRegistry.GetEndpoint(tabletID)
+      -> ReconcileSink.GetTablet() + TSManager.Get(tsUUID)
+      -> returns http://<ts-address>:<rpc-port>
+  -> HTTP RPC to tablet servers (parallel fan-out)
+      -> TabletSnapshotService.CreateTabletSnapshot()
+      -> TabletSnapshotStore.ScanDB() + persistSnapshotData()
+      -> checkpoint written to snapshot/<snapshotID>/<tabletID>/
+  -> Snapshot metadata persisted to master store
+      -> key: snapshot/<snapshotID>, value: SnapshotRecord
+  -> On completion: state transition CREATING -> COMPLETE
+```
+
+Delete flow:
+```text
+SnapshotCoordinator.DeleteSnapshot(snapshotID)
+  -> state transition CREATING/COMPLETE -> DELETING
+  -> Fan-out DeleteTabletSnapshot to all tablet replicas
+  -> TabletSnapshotStore.deleteSnapshotData()
+  -> Remove metadata from master store
+```
+
+Restore flow:
+```text
+SnapshotCoordinator.RestoreSnapshot(snapshotID)
+  -> state transition COMPLETE -> RESTORING
+  -> Fan-out RestoreTabletSnapshot to all tablet replicas
+  -> TabletSnapshotStore loads checkpoint data back to RegularDB
+  -> On completion: state transition RESTORING -> COMPLETE
+```
+
+### 5) Deployment & Verification Flow
 
 ```text
 Compose Up -> Health Wait -> Integration Tests -> Stress Tests -> CI Orchestration

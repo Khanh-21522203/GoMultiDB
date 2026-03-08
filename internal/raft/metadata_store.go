@@ -9,9 +9,10 @@ import (
 )
 
 type Metadata struct {
-	CurrentTerm   uint64 `json:"current_term"`
-	VotedFor      string `json:"voted_for"`
-	ConfigVersion uint64 `json:"config_version"`
+	CurrentTerm   uint64   `json:"current_term"`
+	VotedFor      string   `json:"voted_for"`
+	ConfigVersion uint64   `json:"config_version"`
+	Peers         []string `json:"peers,omitempty"`
 }
 
 type MetadataStore interface {

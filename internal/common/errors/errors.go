@@ -10,6 +10,7 @@ type ErrorCode string
 const (
 	ErrNotLeader            ErrorCode = "ERR_NOT_LEADER"
 	ErrStaleTerm            ErrorCode = "ERR_STALE_TERM"
+	ErrLeaseExpired         ErrorCode = "ERR_LEASE_EXPIRED"
 	ErrTimeout              ErrorCode = "ERR_TIMEOUT"
 	ErrConflict             ErrorCode = "ERR_CONFLICT"
 	ErrRetryableUnavailable ErrorCode = "ERR_RETRYABLE_UNAVAILABLE"
@@ -17,6 +18,10 @@ const (
 	ErrIdempotencyConflict  ErrorCode = "ERR_IDEMPOTENCY_CONFLICT"
 	ErrInternal             ErrorCode = "ERR_INTERNAL"
 	ErrInternalUnmapped     ErrorCode = "ERR_INTERNAL_UNMAPPED"
+	ErrInvalidConfig        ErrorCode = "ERR_INVALID_CONFIG"
+	ErrBootstrapRequired    ErrorCode = "ERR_BOOTSTRAP_REQUIRED"
+	ErrTxnRestartRequired   ErrorCode = "ERR_TXN_RESTART_REQUIRED"
+	ErrOOMKill              ErrorCode = "ERR_OOM_KILL"
 )
 
 type DBError struct {

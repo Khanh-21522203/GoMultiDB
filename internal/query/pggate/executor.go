@@ -113,10 +113,26 @@ func (m *Manager) ExecReadWithRequest(ctx context.Context, sessionID string, op 
 		return ExecResponse{}, err
 	}
 
-	rows := op.FetchSize
-	if rows <= 0 {
-		rows = 1
+	// Real dispatch: if tablet dispatcher and partition resolver are injected.
+	m.mu.RLock()
+	dispatcher := m.tabletDispatcher
+	resolver := m.partitionResolver
+	m.mu.RUnlock()
+
+	var rows int
+	if dispatcher != nil && resolver != nil {
+		rows, err = m.execReadReal(ctx, s, op)
+		if err != nil {
+			return ExecResponse{}, err
+		}
+	} else {
+		// Stub behaviour: return FetchSize as row count.
+		rows = op.FetchSize
+		if rows <= 0 {
+			rows = 1
+		}
 	}
+
 	resp := ExecResponse{Applied: true, Rows: rows, InTxn: s.Txn != nil}
 	if s.Txn != nil {
 		resp.TxnID = s.Txn.TxnID

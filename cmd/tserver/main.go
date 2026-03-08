@@ -11,6 +11,8 @@ import (
 	rpcpkg "GoMultiDB/internal/rpc"
 	"GoMultiDB/internal/server"
 	"GoMultiDB/internal/services/ping"
+	"GoMultiDB/internal/storage/rocks"
+	"GoMultiDB/internal/tablet/snapshot"
 )
 
 func main() {
@@ -37,7 +39,16 @@ func main() {
 		log.Fatalf("register ping service: %v", err)
 	}
 
-	runtime, err := server.NewRuntime(cfg, rpcServer)
+	// Create rocks-backed store for catalog and snapshot persistence.
+	rocksStore := rocks.NewMemoryStore()
+
+	// Register tablet snapshot service.
+	snapStore := snapshot.NewStore(rocksStore)
+	if err := rpcServer.RegisterService(snapshot.NewService(snapStore)); err != nil {
+		log.Fatalf("register tablet snapshot service: %v", err)
+	}
+
+	runtime, err := server.NewRuntime(cfg, rpcServer, rocksStore)
 	if err != nil {
 		log.Fatalf("create runtime: %v", err)
 	}

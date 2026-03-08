@@ -29,6 +29,9 @@ type WriteOp struct {
 	TableID   string
 	Operation string // INSERT/UPDATE/DELETE
 	Columns   map[int]PgValue
+	// BindVars contains the partition key values used by PartitionResolver.
+	// May be nil for non-partitioned or single-tablet tables.
+	BindVars []PgValue
 }
 
 type TxnState string
@@ -49,6 +52,7 @@ type TxnHandle struct {
 	State      TxnState
 	Epoch      uint64
 	OpSeq      uint64
+	SnapshotHT uint64 // hybrid timestamp at which the txn reads
 	Savepoints []Savepoint
 }
 
@@ -61,10 +65,13 @@ type Session struct {
 }
 
 type Manager struct {
-	mu         sync.RWMutex
-	sessions   map[string]*Session
-	retryStats RetryStats
-	idemStore  idempotency.Store
+	mu                sync.RWMutex
+	sessions          map[string]*Session
+	retryStats        RetryStats
+	idemStore         idempotency.Store
+	tabletDispatcher  TabletDispatcher
+	partitionResolver PartitionResolver
+	txnCoordinator    TxnCoordinator
 }
 
 func NewManager() *Manager {
@@ -164,14 +171,44 @@ func (m *Manager) FlushWrites(ctx context.Context, sessionID string) ([]WriteOp,
 	default:
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	s, ok := m.sessions[sessionID]
 	if !ok {
+		m.mu.Unlock()
 		return nil, dberrors.New(dberrors.ErrInvalidArgument, "session not found", false, nil)
 	}
-	out := append([]WriteOp(nil), s.PendingWrites...)
-	s.PendingWrites = s.PendingWrites[:0]
-	return out, nil
+	ops := append([]WriteOp(nil), s.PendingWrites...)
+	dispatcher := m.tabletDispatcher
+	resolver := m.partitionResolver
+	m.mu.Unlock()
+
+	// Real dispatch: if both dispatcher and resolver are injected, send to tablets.
+	if dispatcher != nil && resolver != nil && len(ops) > 0 {
+		m.mu.RLock()
+		sessionCopy := m.sessions[sessionID]
+		var sCopy *Session
+		if sessionCopy != nil {
+			cp := *sessionCopy
+			if sessionCopy.Txn != nil {
+				txn := *sessionCopy.Txn
+				cp.Txn = &txn
+			}
+			sCopy = &cp
+		}
+		m.mu.RUnlock()
+		if sCopy != nil {
+			if err := m.flushWritesReal(ctx, sCopy, ops); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	// Clear the buffer regardless.
+	m.mu.Lock()
+	if sess, ok2 := m.sessions[sessionID]; ok2 {
+		sess.PendingWrites = sess.PendingWrites[:0]
+	}
+	m.mu.Unlock()
+	return ops, nil
 }
 
 func (m *Manager) BeginTxn(ctx context.Context, sessionID string, reqID ids.RequestID) (*TxnHandle, error) {
@@ -188,17 +225,44 @@ func (m *Manager) BeginTxn(ctx context.Context, sessionID string, reqID ids.Requ
 	}
 
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	s, ok := m.sessions[sessionID]
 	if !ok {
+		m.mu.Unlock()
 		return nil, dberrors.New(dberrors.ErrInvalidArgument, "session not found", false, nil)
 	}
 	if s.Txn != nil && s.Txn.State == TxnStateActive {
 		txn := *s.Txn
 		txn.Savepoints = append([]Savepoint(nil), s.Txn.Savepoints...)
+		m.mu.Unlock()
+		return &txn, nil
+	}
+	coordinator := m.txnCoordinator
+	m.mu.Unlock()
+
+	// Real coordinator path.
+	if coordinator != nil {
+		m.mu.Lock()
+		sess, ok2 := m.sessions[sessionID]
+		if !ok2 {
+			m.mu.Unlock()
+			return nil, dberrors.New(dberrors.ErrInvalidArgument, "session not found", false, nil)
+		}
+		handle, err := m.beginTxnReal(ctx, sess, reqID)
+		m.mu.Unlock()
+		if err != nil {
+			return nil, err
+		}
+		txn := *handle
 		return &txn, nil
 	}
 
+	// Stub path.
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok = m.sessions[sessionID]
+	if !ok {
+		return nil, dberrors.New(dberrors.ErrInvalidArgument, "session not found", false, nil)
+	}
 	s.Txn = &TxnHandle{
 		TxnID:      fmt.Sprintf("%s-txn-%s", sessionID, reqID),
 		State:      TxnStateActive,
@@ -326,9 +390,12 @@ func (m *Manager) CommitTxn(ctx context.Context, sessionID string) error {
 		return dberrors.New(dberrors.ErrInvalidArgument, "session id is required", false, nil)
 	}
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
 	s, ok := m.sessions[sessionID]
+	coordinator := m.txnCoordinator
+	dispatcher := m.tabletDispatcher
+	m.mu.RUnlock()
+
 	if !ok {
 		return dberrors.New(dberrors.ErrInvalidArgument, "session not found", false, nil)
 	}
@@ -336,8 +403,18 @@ func (m *Manager) CommitTxn(ctx context.Context, sessionID string) error {
 		return dberrors.New(dberrors.ErrConflict, "no active transaction", false, nil)
 	}
 
-	s.Txn = nil
-	s.PendingWrites = s.PendingWrites[:0]
+	// Real coordinator commit.
+	if coordinator != nil && dispatcher != nil {
+		return m.commitTxnReal(ctx, sessionID, s)
+	}
+
+	// Stub path.
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if sess, ok2 := m.sessions[sessionID]; ok2 {
+		sess.Txn = nil
+		sess.PendingWrites = sess.PendingWrites[:0]
+	}
 	return nil
 }
 
@@ -351,9 +428,12 @@ func (m *Manager) AbortTxn(ctx context.Context, sessionID string) error {
 		return dberrors.New(dberrors.ErrInvalidArgument, "session id is required", false, nil)
 	}
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
 	s, ok := m.sessions[sessionID]
+	coordinator := m.txnCoordinator
+	dispatcher := m.tabletDispatcher
+	m.mu.RUnlock()
+
 	if !ok {
 		return dberrors.New(dberrors.ErrInvalidArgument, "session not found", false, nil)
 	}
@@ -361,8 +441,18 @@ func (m *Manager) AbortTxn(ctx context.Context, sessionID string) error {
 		return nil
 	}
 
-	s.Txn = nil
-	s.PendingWrites = s.PendingWrites[:0]
+	// Real coordinator abort.
+	if coordinator != nil && dispatcher != nil {
+		return m.abortTxnReal(ctx, sessionID, s)
+	}
+
+	// Stub path.
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if sess, ok2 := m.sessions[sessionID]; ok2 {
+		sess.Txn = nil
+		sess.PendingWrites = sess.PendingWrites[:0]
+	}
 	return nil
 }
 

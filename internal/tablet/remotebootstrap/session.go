@@ -9,13 +9,22 @@ import (
 	dberrors "GoMultiDB/internal/common/errors"
 )
 
+// DefaultMaxConcurrentSessions is the maximum number of simultaneous bootstrap
+// sessions a single source node will serve.
+const DefaultMaxConcurrentSessions = 4
+
+// DefaultSessionTimeout is how long a session may be idle before it is
+// automatically cleaned up.
+const DefaultSessionTimeout = 10 * time.Minute
+
 type SessionState string
 
 const (
-	SessionInit       SessionState = "INIT"
+	SessionInit         SessionState = "INIT"
 	SessionTransferring SessionState = "TRANSFERRING"
-	SessionFinalized  SessionState = "FINALIZED"
-	SessionFailed     SessionState = "FAILED"
+	SessionFinalized    SessionState = "FINALIZED"
+	SessionFailed       SessionState = "FAILED"
+	SessionAborted      SessionState = "ABORTED"
 )
 
 type FileMeta struct {
@@ -38,14 +47,83 @@ type Session struct {
 	Staged       map[string][]byte
 }
 
+// ManagerConfig configures the session manager.
+type ManagerConfig struct {
+	// MaxConcurrentSessions caps simultaneous bootstrap sessions.
+	// Zero → DefaultMaxConcurrentSessions.
+	MaxConcurrentSessions int
+	// SessionTimeout is the idle timeout before auto-cleanup.
+	// Zero → DefaultSessionTimeout.
+	SessionTimeout time.Duration
+	// NowFn returns the current time (injectable for tests).
+	NowFn func() time.Time
+}
+
 type Manager struct {
-	mu       sync.Mutex
+	mu      sync.Mutex
 	sessions map[string]*Session
-	nextID   uint64
+	nextID  uint64
+	cfg     ManagerConfig
 }
 
 func NewManager() *Manager {
-	return &Manager{sessions: make(map[string]*Session)}
+	return NewManagerWithConfig(ManagerConfig{})
+}
+
+func NewManagerWithConfig(cfg ManagerConfig) *Manager {
+	if cfg.MaxConcurrentSessions <= 0 {
+		cfg.MaxConcurrentSessions = DefaultMaxConcurrentSessions
+	}
+	if cfg.SessionTimeout <= 0 {
+		cfg.SessionTimeout = DefaultSessionTimeout
+	}
+	if cfg.NowFn == nil {
+		cfg.NowFn = func() time.Time { return time.Now().UTC() }
+	}
+	return &Manager{sessions: make(map[string]*Session), cfg: cfg}
+}
+
+// ActiveCount returns the number of sessions currently in the TRANSFERRING state.
+func (m *Manager) ActiveCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	count := 0
+	for _, s := range m.sessions {
+		if s.State == SessionTransferring {
+			count++
+		}
+	}
+	return count
+}
+
+// AbortSession marks a session as aborted and removes it from the registry.
+func (m *Manager) AbortSession(sessionID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.sessions[sessionID]
+	if !ok {
+		return dberrors.New(dberrors.ErrInvalidArgument, "session not found", false, nil)
+	}
+	s.State = SessionAborted
+	delete(m.sessions, sessionID)
+	return nil
+}
+
+// ExpireStaleSessions removes sessions that have been idle longer than SessionTimeout.
+// Returns the number of sessions removed.
+func (m *Manager) ExpireStaleSessions() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := m.cfg.NowFn()
+	removed := 0
+	for id, s := range m.sessions {
+		if s.State == SessionTransferring && now.Sub(s.StartedAt) > m.cfg.SessionTimeout {
+			s.State = SessionFailed
+			delete(m.sessions, id)
+			removed++
+		}
+	}
+	return removed
 }
 
 func (m *Manager) StartRemoteBootstrap(tabletID, sourcePeer string, manifest Manifest) (string, error) {
@@ -57,13 +135,26 @@ func (m *Manager) StartRemoteBootstrap(tabletID, sourcePeer string, manifest Man
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	// Enforce concurrent session cap.
+	active := 0
+	for _, s := range m.sessions {
+		if s.State == SessionTransferring {
+			active++
+		}
+	}
+	if active >= m.cfg.MaxConcurrentSessions {
+		return "", dberrors.New(dberrors.ErrRetryableUnavailable,
+			"max concurrent bootstrap sessions reached", true, nil)
+	}
+
 	m.nextID++
 	sessionID := fmt.Sprintf("rb-%d", m.nextID)
 	s := &Session{
 		SessionID:    sessionID,
 		TabletID:     tabletID,
 		SourcePeerID: sourcePeer,
-		StartedAt:    time.Now().UTC(),
+		StartedAt:    m.cfg.NowFn(),
 		State:        SessionTransferring,
 		Manifest:     manifest,
 		Staged:       make(map[string][]byte),
@@ -124,7 +215,34 @@ func (m *Manager) StageFileChunk(sessionID, file string, chunk []byte, expectedC
 	return nil
 }
 
+// FinalizeBootstrap marks the session as finalized and removes it from the
+// registry, releasing any checkpoint hold held by the source.
+//
+// In the split source/destination architecture, completeness validation is
+// performed on the destination side (by the Client) before Install is called.
+// The source-side finalize is simply a cleanup notification.
+//
+// When the Manager is used in the legacy in-process mode (StageFileChunk path),
+// FinalizeWithValidation can be used instead.
 func (m *Manager) FinalizeBootstrap(sessionID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.sessions[sessionID]
+	if !ok {
+		return dberrors.New(dberrors.ErrInvalidArgument, "session not found", false, nil)
+	}
+	if s.State != SessionTransferring {
+		return dberrors.New(dberrors.ErrConflict, "session cannot be finalized", true, nil)
+	}
+	s.State = SessionFinalized
+	delete(m.sessions, sessionID)
+	return nil
+}
+
+// FinalizeWithValidation is the legacy in-process finalize that validates the
+// staged files (uploaded via StageFileChunk) before marking the session done.
+// Used by direct in-process tests that exercise the StageFileChunk path.
+func (m *Manager) FinalizeWithValidation(sessionID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	s, ok := m.sessions[sessionID]
@@ -146,5 +264,6 @@ func (m *Manager) FinalizeBootstrap(sessionID string) error {
 		}
 	}
 	s.State = SessionFinalized
+	delete(m.sessions, sessionID)
 	return nil
 }

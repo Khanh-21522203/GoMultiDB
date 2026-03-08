@@ -3,13 +3,16 @@ package server
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"GoMultiDB/internal/master/snapshot"
 	"GoMultiDB/internal/query/cql"
 	"GoMultiDB/internal/query/sql"
 	rpcpkg "GoMultiDB/internal/rpc"
+	"GoMultiDB/internal/storage/rocks"
 )
 
 type Clock interface {
@@ -28,9 +31,16 @@ type Runtime struct {
 	sqlCoord  sql.Coordinator
 	cqlServer cql.Server
 
-	mu      sync.Mutex
-	started bool
-	stopped atomic.Bool
+	// Snapshot coordinator for distributed snapshot management.
+	snapCoord     *snapshot.Coordinator
+	snapStore     snapshot.SnapshotStore
+	rocksStore    rocks.Store
+	tabletRPC     snapshot.TabletRPCRegistry
+
+	mu            sync.Mutex
+	started       bool
+	stopped       atomic.Bool
+	shutdownPhase atomic.Int32
 }
 
 type YSQLStatus struct {
@@ -38,7 +48,13 @@ type YSQLStatus struct {
 	Healthy bool
 }
 
-func NewRuntime(cfg Config, rpcServer *rpcpkg.Server) (*Runtime, error) {
+func NewRuntime(cfg Config, rpcServer *rpcpkg.Server, rocksStore rocks.Store) (*Runtime, error) {
+	return NewRuntimeWithTabletRPC(cfg, rpcServer, rocksStore, nil)
+}
+
+// NewRuntimeWithTabletRPC creates a Runtime with an optional tablet RPC registry.
+// If tabletRPC is nil, the snapshot coordinator will use a no-op implementation.
+func NewRuntimeWithTabletRPC(cfg Config, rpcServer *rpcpkg.Server, rocksStore rocks.Store, tabletRPC snapshot.TabletRPCRegistry) (*Runtime, error) {
 	if cfg.NodeID == "" {
 		return nil, fmt.Errorf("node id is required")
 	}
@@ -48,13 +64,37 @@ func NewRuntime(cfg Config, rpcServer *rpcpkg.Server) (*Runtime, error) {
 	if cfg.MaxClockSkew <= 0 {
 		cfg.MaxClockSkew = DefaultConfig().MaxClockSkew
 	}
-	return &Runtime{
+
+	r := &Runtime{
 		cfg:       cfg,
 		rpcServer: rpcServer,
 		clock:     systemClock{},
 		sqlCoord:  sql.NewLocalCoordinator(),
 		cqlServer: cql.NewLocalServer(),
-	}, nil
+		rocksStore: rocksStore,
+		tabletRPC: tabletRPC,
+	}
+
+	// Initialize snapshot coordinator if enabled.
+	if cfg.EnableSnapshotCoord && rocksStore != nil {
+		r.snapStore = snapshot.NewRocksSnapshotStore(rocksStore)
+
+		// Use the provided registry or fall back to noop
+		var rpcClient snapshot.TabletSnapshotRPC
+		if tabletRPC != nil {
+			rpcClient = snapshot.NewRegistryClient(tabletRPC)
+		} else {
+			rpcClient = &noopTabletSnapshotRPC{}
+		}
+
+		r.snapCoord = snapshot.NewCoordinator(rpcClient, snapshot.Config{
+			MaxConcurrentSnapshots: cfg.MaxConcurrentSnaps,
+			NowFn:                  r.clock.Now,
+			Store:                  r.snapStore,
+		})
+	}
+
+	return r, nil
 }
 
 func (r *Runtime) Init(ctx context.Context) error {
@@ -103,6 +143,10 @@ func (r *Runtime) Start(ctx context.Context) error {
 	return nil
 }
 
+// ShutdownPhase returns the current graceful-shutdown phase (0 = not stopping).
+// Phases: 1=stop-query-coordinators, 2=stop-rpc.
+func (r *Runtime) ShutdownPhase() int32 { return r.shutdownPhase.Load() }
+
 func (r *Runtime) Stop(ctx context.Context) error {
 	if r.stopped.Swap(true) {
 		return nil
@@ -112,17 +156,30 @@ func (r *Runtime) Stop(ctx context.Context) error {
 	if !r.started {
 		return nil
 	}
+
+	// Phase 1 — stop query coordinators (YCQL then YSQL).
+	r.shutdownPhase.Store(1)
+	slog.Info("shutdown: phase 1 — stopping query coordinators")
 	if r.cqlServer != nil {
 		if err := r.cqlServer.Stop(ctx); err != nil {
-			return err
+			return fmt.Errorf("shutdown phase 1 (cql): %w", err)
 		}
 	}
 	if r.sqlCoord != nil {
 		if err := r.sqlCoord.Stop(ctx); err != nil {
-			return err
+			return fmt.Errorf("shutdown phase 1 (sql): %w", err)
 		}
 	}
-	return r.rpcServer.Stop(ctx)
+
+	// Phase 2 — close RPC listener.
+	r.shutdownPhase.Store(2)
+	slog.Info("shutdown: phase 2 — stopping RPC server")
+	if err := r.rpcServer.Stop(ctx); err != nil {
+		return fmt.Errorf("shutdown phase 2 (rpc): %w", err)
+	}
+
+	r.shutdownPhase.Store(0)
+	return nil
 }
 
 func (r *Runtime) StartYSQL(ctx context.Context) error {
@@ -168,4 +225,55 @@ func (r *Runtime) GetYSQLStatus(ctx context.Context) (YSQLStatus, error) {
 	}
 	status.Healthy = true
 	return status, nil
+}
+
+// GetSnapshotCoordinator returns the snapshot coordinator for this runtime.
+// Returns nil if snapshot coordination is not enabled.
+func (r *Runtime) GetSnapshotCoordinator() *snapshot.Coordinator {
+	return r.snapCoord
+}
+
+// SetTabletRPCRegistry updates the tablet RPC registry used by the snapshot coordinator.
+// This allows the registry to be populated after the runtime starts (e.g., after heartbeats register tablets).
+func (r *Runtime) SetTabletRPCRegistry(registry snapshot.TabletRPCRegistry) {
+	if r.snapCoord == nil {
+		return
+	}
+	r.mu.Lock()
+	r.tabletRPC = registry
+	r.mu.Unlock()
+
+	// Recreate the coordinator with the new registry
+	rpcClient := snapshot.NewRegistryClient(registry)
+	r.snapCoord = snapshot.NewCoordinator(rpcClient, snapshot.Config{
+		MaxConcurrentSnapshots: r.cfg.MaxConcurrentSnaps,
+		NowFn:                  r.clock.Now,
+		Store:                  r.snapStore,
+	})
+}
+
+// GetTabletRPCRegistry returns the current tablet RPC registry.
+func (r *Runtime) GetTabletRPCRegistry() snapshot.TabletRPCRegistry {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.tabletRPC
+}
+
+// noopTabletSnapshotRPC is a no-op implementation of TabletSnapshotRPC used
+// until the real tablet snapshot gRPC client is implemented.
+type noopTabletSnapshotRPC struct{}
+
+func (noopTabletSnapshotRPC) CreateTabletSnapshot(ctx context.Context, snapshotID, tabletID string) error {
+	slog.Info("noop tablet snapshot: create", "snapshot_id", snapshotID, "tablet_id", tabletID)
+	return nil
+}
+
+func (noopTabletSnapshotRPC) DeleteTabletSnapshot(ctx context.Context, snapshotID, tabletID string) error {
+	slog.Info("noop tablet snapshot: delete", "snapshot_id", snapshotID, "tablet_id", tabletID)
+	return nil
+}
+
+func (noopTabletSnapshotRPC) RestoreTabletSnapshot(ctx context.Context, snapshotID, tabletID string) error {
+	slog.Info("noop tablet snapshot: restore", "snapshot_id", snapshotID, "tablet_id", tabletID)
+	return nil
 }

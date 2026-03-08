@@ -9,6 +9,7 @@ import (
 	"GoMultiDB/internal/query/cql"
 	"GoMultiDB/internal/query/sql"
 	rpcpkg "GoMultiDB/internal/rpc"
+	"GoMultiDB/internal/storage/rocks"
 )
 
 func TestPhase5SmokeRuntimeQueryStatus(t *testing.T) {
@@ -23,7 +24,8 @@ func TestPhase5SmokeRuntimeQueryStatus(t *testing.T) {
 		t.Fatalf("new rpc server: %v", err)
 	}
 
-	r, err := NewRuntime(cfg, rpcServer)
+	rocksStore := rocks.NewMemoryStore()
+	r, err := NewRuntime(cfg, rpcServer, rocksStore)
 	if err != nil {
 		t.Fatalf("new runtime: %v", err)
 	}

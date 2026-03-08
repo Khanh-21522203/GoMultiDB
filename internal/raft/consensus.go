@@ -61,22 +61,26 @@ type AppendEntriesRequest struct {
 }
 
 type AppendEntriesResponse struct {
-	Term         uint64
-	Success      bool
-	LastReceived types.OpID
+	Term           uint64
+	Success        bool
+	LastReceived   types.OpID
+	NeedsBootstrap bool // true when follower's log is behind leader's GC boundary
 }
 
 type Consensus struct {
-	cfg      Config
-	wal      *wal.Log
-	meta     MetadataStore
-	queue    *ReplicationQueue
-	mu       sync.RWMutex
-	state    ReplicaState
-	stopCh   chan struct{}
-	once     sync.Once
-	rng      *rand.Rand
-	tickerWg sync.WaitGroup
+	cfg              Config
+	wal              *wal.Log
+	meta             MetadataStore
+	queue            *ReplicationQueue
+	mu               sync.RWMutex
+	state            ReplicaState
+	peers            map[string]struct{} // known peer node IDs (excludes self)
+	configInProgress bool                // true while a ChangeConfig is in-flight
+	bootstrapBoundary types.OpID         // log entries below this may require remote bootstrap
+	stopCh            chan struct{}
+	once              sync.Once
+	rng               *rand.Rand
+	tickerWg          sync.WaitGroup
 }
 
 func NewConsensus(cfg Config, walLog *wal.Log, metaStore MetadataStore) (*Consensus, error) {
@@ -114,6 +118,11 @@ func NewConsensus(cfg Config, walLog *wal.Log, metaStore MetadataStore) (*Consen
 		meta.CurrentTerm = 1
 	}
 
+	peers := make(map[string]struct{}, len(meta.Peers))
+	for _, p := range meta.Peers {
+		peers[p] = struct{}{}
+	}
+
 	c := &Consensus{
 		cfg:   cfg,
 		wal:   walLog,
@@ -125,6 +134,7 @@ func NewConsensus(cfg Config, walLog *wal.Log, metaStore MetadataStore) (*Consen
 			Role:          Follower,
 			ConfigVersion: meta.ConfigVersion,
 		},
+		peers:  peers,
 		stopCh: make(chan struct{}),
 		rng:    rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
@@ -243,7 +253,12 @@ func (c *Consensus) HandleAppendEntries(ctx context.Context, req AppendEntriesRe
 		c.state.LastAppliedOpID = req.LeaderCommit
 	}
 
-	return AppendEntriesResponse{Term: c.state.CurrentTerm, Success: true, LastReceived: c.state.LastReceivedOpID}, nil
+	needsBootstrap := false
+	if !c.bootstrapBoundary.IsZero() && c.state.LastReceivedOpID.Less(c.bootstrapBoundary) {
+		needsBootstrap = true
+	}
+
+	return AppendEntriesResponse{Term: c.state.CurrentTerm, Success: true, LastReceived: c.state.LastReceivedOpID, NeedsBootstrap: needsBootstrap}, nil
 }
 
 func (c *Consensus) HandleRequestVote(_ context.Context, req VoteRequest) (VoteResponse, error) {
@@ -345,10 +360,201 @@ func (c *Consensus) randomElectionTimeout() time.Duration {
 	return min + time.Duration(n)
 }
 
+// ── Leader lease reads ────────────────────────────────────────────────────────
+
+// GetLeaderLeaseStatus returns whether the node believes it holds a valid leader
+// lease and when the lease expires. Returns (false, zero) if not a leader.
+func (c *Consensus) GetLeaderLeaseStatus() (valid bool, expiresAt time.Time) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.state.Role != Leader {
+		return false, time.Time{}
+	}
+	expiresAt = c.state.LeaderLeaseUntil
+	return time.Now().Before(expiresAt), expiresAt
+}
+
+// ReadAtLease returns nil if the leader lease is currently valid, allowing
+// a linearizable read without a round-trip. Returns ErrLeaseExpired otherwise.
+func (c *Consensus) ReadAtLease(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	valid, _ := c.GetLeaderLeaseStatus()
+	if !valid {
+		return dberrors.New(dberrors.ErrLeaseExpired, "leader lease expired or not leader", true, nil)
+	}
+	return nil
+}
+
+// ── Pre-vote ──────────────────────────────────────────────────────────────────
+
+// PreVoteRequest is sent by a candidate before incrementing its term.
+// A majority of pre-votes are required before a real election begins.
+type PreVoteRequest struct {
+	// NextTerm is the term the candidate would use in a real election (current+1).
+	NextTerm    uint64
+	CandidateID string
+	LastLogOpID types.OpID
+	RequestID   string
+}
+
+// PreVoteResponse carries a node's response to a PreVoteRequest.
+type PreVoteResponse struct {
+	Term        uint64
+	VoteGranted bool
+}
+
+// HandlePreVote processes a pre-vote request without mutating persistent state
+// (pre-vote does not update CurrentTerm or VotedFor).
+//
+// A pre-vote is granted when:
+//   - This node has not heard from a valid leader recently (lease expired), and
+//   - The candidate's log is at least as up-to-date as ours.
+func (c *Consensus) HandlePreVote(_ context.Context, req PreVoteRequest) (PreVoteResponse, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	// Reject if we know of an active leader (our follower lease is still valid).
+	// This prevents isolated nodes from disrupting a functioning cluster.
+	followerLeaseValid := c.state.Role == Follower &&
+		!c.state.LeaderLeaseUntil.IsZero() &&
+		time.Now().Before(c.state.LeaderLeaseUntil)
+	leaderIsUs := c.state.Role == Leader && time.Now().Before(c.state.LeaderLeaseUntil)
+
+	if followerLeaseValid || leaderIsUs {
+		return PreVoteResponse{Term: c.state.CurrentTerm, VoteGranted: false}, nil
+	}
+
+	// Candidate's log must be at least as up-to-date as ours.
+	logUpToDate := c.state.LastReceivedOpID.Less(req.LastLogOpID) ||
+		c.state.LastReceivedOpID.Equal(req.LastLogOpID)
+	if !logUpToDate {
+		return PreVoteResponse{Term: c.state.CurrentTerm, VoteGranted: false}, nil
+	}
+
+	return PreVoteResponse{Term: c.state.CurrentTerm, VoteGranted: true}, nil
+}
+
+// ── Dynamic membership change ─────────────────────────────────────────────────
+
+// ConfigChangeType enumerates supported membership operations.
+type ConfigChangeType int
+
+const (
+	AddPeer    ConfigChangeType = iota // add a new voting peer
+	RemovePeer                         // remove an existing peer
+)
+
+// ConfigChangeOp describes a single membership change.
+type ConfigChangeOp struct {
+	Type   ConfigChangeType
+	PeerID string
+}
+
+// ChangeConfig applies a single membership change (add or remove peer).
+// Only one config change may be in-flight at a time; subsequent calls return
+// ErrConflict until the first completes.
+//
+// The change is persisted in Metadata before being applied in-memory so that
+// restarts see the updated peer list.
+func (c *Consensus) ChangeConfig(_ context.Context, op ConfigChangeOp) error {
+	if op.PeerID == "" {
+		return dberrors.New(dberrors.ErrInvalidArgument, "peer id is required", false, nil)
+	}
+	if op.PeerID == c.cfg.NodeID {
+		return dberrors.New(dberrors.ErrInvalidArgument, "cannot change config for self", false, nil)
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.state.Role != Leader {
+		return dberrors.New(dberrors.ErrNotLeader, "config change requires leader", true, nil)
+	}
+	if c.configInProgress {
+		return dberrors.New(dberrors.ErrConflict, "config change already in progress", true, nil)
+	}
+
+	switch op.Type {
+	case AddPeer:
+		if _, exists := c.peers[op.PeerID]; exists {
+			return dberrors.New(dberrors.ErrConflict, "peer already in config", false, nil)
+		}
+	case RemovePeer:
+		if _, exists := c.peers[op.PeerID]; !exists {
+			return dberrors.New(dberrors.ErrInvalidArgument, "peer not in config", false, nil)
+		}
+	default:
+		return dberrors.New(dberrors.ErrInvalidArgument, "unknown config change type", false, nil)
+	}
+
+	c.configInProgress = true
+	defer func() { c.configInProgress = false }()
+
+	// Apply the change to an in-memory copy of peers.
+	newPeers := make(map[string]struct{}, len(c.peers))
+	for k := range c.peers {
+		newPeers[k] = struct{}{}
+	}
+	switch op.Type {
+	case AddPeer:
+		newPeers[op.PeerID] = struct{}{}
+	case RemovePeer:
+		delete(newPeers, op.PeerID)
+	}
+
+	// Persist before applying in-memory.
+	peerList := make([]string, 0, len(newPeers))
+	for k := range newPeers {
+		peerList = append(peerList, k)
+	}
+	c.state.ConfigVersion++
+	if err := c.meta.Save(Metadata{
+		CurrentTerm:   c.state.CurrentTerm,
+		VotedFor:      c.state.VotedFor,
+		ConfigVersion: c.state.ConfigVersion,
+		Peers:         peerList,
+	}); err != nil {
+		c.state.ConfigVersion-- // rollback counter
+		return fmt.Errorf("raft: persist config change: %w", err)
+	}
+	c.peers = newPeers
+	return nil
+}
+
+// Peers returns a snapshot of the current peer set (excludes self).
+func (c *Consensus) Peers() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	out := make([]string, 0, len(c.peers))
+	for k := range c.peers {
+		out = append(out, k)
+	}
+	return out
+}
+
+// SetBootstrapBoundary sets the log GC boundary used to indicate that a
+// follower requires remote bootstrap when it is too far behind.
+func (c *Consensus) SetBootstrapBoundary(boundary types.OpID) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.bootstrapBoundary = boundary
+}
+
+// ── internal ─────────────────────────────────────────────────────────────────
+
 func (c *Consensus) persistMetadataLocked() error {
+	peers := make([]string, 0, len(c.peers))
+	for k := range c.peers {
+		peers = append(peers, k)
+	}
 	return c.meta.Save(Metadata{
 		CurrentTerm:   c.state.CurrentTerm,
 		VotedFor:      c.state.VotedFor,
 		ConfigVersion: c.state.ConfigVersion,
+		Peers:         peers,
 	})
 }

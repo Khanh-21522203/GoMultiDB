@@ -100,6 +100,12 @@ func (s *Server) RegisterService(svc Service) error {
 
 }
 
+func (s *Server) GetBindAddress() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.cfg.BindAddress
+}
+
 func (s *Server) Start(ctx context.Context) error {
 
 	s.mu.Lock()

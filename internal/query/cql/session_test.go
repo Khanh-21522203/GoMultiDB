@@ -44,7 +44,7 @@ func TestSessionPrepareAndExecute(t *testing.T) {
 		t.Fatalf("expected statement id")
 	}
 
-	resp, err := m.ExecutePrepared(context.Background(), "conn-2", stmt.ID, []Value{1})
+	resp, err := m.ExecutePrepared(context.Background(), "conn-2", stmt.ID, []any{1})
 	if err != nil {
 		t.Fatalf("execute prepared: %v", err)
 	}

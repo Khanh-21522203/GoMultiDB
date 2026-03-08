@@ -11,9 +11,10 @@ type Event struct {
 }
 
 type Checkpoint struct {
-	StreamID string
-	TabletID string
-	Sequence uint64
+	StreamID  string
+	TabletID  string
+	Sequence  uint64
+	Timestamp time.Time
 }
 
 type PollRequest struct {

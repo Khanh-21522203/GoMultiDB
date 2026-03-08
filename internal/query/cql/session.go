@@ -160,7 +160,7 @@ func (m *SessionManager) Prepare(ctx context.Context, connID, query string) (Pre
 	return stmt, nil
 }
 
-func (m *SessionManager) ExecutePrepared(ctx context.Context, connID, stmtID string, _ []Value) (Response, error) {
+func (m *SessionManager) ExecutePrepared(ctx context.Context, connID, stmtID string, _ []any) (Response, error) {
 	select {
 	case <-ctx.Done():
 		return Response{}, ctx.Err()

@@ -8,6 +8,7 @@ import (
 	dberrors "GoMultiDB/internal/common/errors"
 	"GoMultiDB/internal/query/sql"
 	rpcpkg "GoMultiDB/internal/rpc"
+	"GoMultiDB/internal/storage/rocks"
 )
 
 func TestPhase5FailoverRuntimeYSQLStatusTransition(t *testing.T) {
@@ -19,7 +20,8 @@ func TestPhase5FailoverRuntimeYSQLStatusTransition(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new rpc server: %v", err)
 	}
-	r, err := NewRuntime(cfg, rpcServer)
+	rocksStore := rocks.NewMemoryStore()
+	r, err := NewRuntime(cfg, rpcServer, rocksStore)
 	if err != nil {
 		t.Fatalf("new runtime: %v", err)
 	}

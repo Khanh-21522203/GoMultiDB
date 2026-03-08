@@ -3,6 +3,8 @@ package observability
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"os"
 	"sort"
 	"sync"
 )
@@ -25,19 +27,120 @@ type metricKey struct {
 	Labels string
 }
 
+// LogContext carries identity fields attached to every log record.
+type LogContext struct {
+	NodeID    string
+	TabletID  string
+	TraceID   string
+	RequestID string
+}
+
+// histogramData holds per-bucket counts for a histogram metric.
+type histogramData struct {
+	buckets []float64 // upper bounds
+	counts  []uint64  // count per bucket (cumulative)
+	sum     float64
+	count   uint64
+}
+
+// DefaultHistogramBuckets are the default latency bucket boundaries in milliseconds.
+var DefaultHistogramBuckets = []float64{0.5, 1, 2, 5, 10, 25, 50, 100, 250, 500, 1000}
+
 type Registry struct {
 	mu          sync.RWMutex
 	descriptors map[string]MetricDescriptor
 	values      map[metricKey]float64
+	histograms  map[string]*histogramData
 	health      map[string]HealthStatus
+	logCtx      LogContext
+	logger      *slog.Logger
+	draining    bool
 }
 
 func NewRegistry() *Registry {
 	return &Registry{
 		descriptors: make(map[string]MetricDescriptor),
 		values:      make(map[metricKey]float64),
+		histograms:  make(map[string]*histogramData),
 		health:      make(map[string]HealthStatus),
+		logger:      slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})),
 	}
+}
+
+// SetLogContext attaches node-identity fields to all future log records.
+func (r *Registry) SetLogContext(lc LogContext) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.logCtx = lc
+}
+
+// Log emits a structured log record at the given level, adding logCtx fields.
+func (r *Registry) Log(level slog.Level, msg string, args ...any) {
+	r.mu.RLock()
+	lc := r.logCtx
+	r.mu.RUnlock()
+	r.logger.Log(nil, level, msg, append(args,
+		"node_id", lc.NodeID,
+		"tablet_id", lc.TabletID,
+		"trace_id", lc.TraceID,
+		"request_id", lc.RequestID,
+	)...)
+}
+
+// RegisterHistogram registers a histogram metric with the given bucket boundaries.
+// If buckets is nil, DefaultHistogramBuckets is used.
+func (r *Registry) RegisterHistogram(_ context.Context, name, help string, buckets []float64) error {
+	if name == "" {
+		return fmt.Errorf("histogram name is required")
+	}
+	if buckets == nil {
+		buckets = DefaultHistogramBuckets
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.histograms[name]; ok {
+		return nil // idempotent
+	}
+	sorted := append([]float64(nil), buckets...)
+	sort.Float64s(sorted)
+	r.histograms[name] = &histogramData{
+		buckets: sorted,
+		counts:  make([]uint64, len(sorted)),
+	}
+	r.descriptors[name] = MetricDescriptor{Name: name, Type: "histogram", Help: help}
+	return nil
+}
+
+// ObserveHistogram records a single observation in the histogram.
+func (r *Registry) ObserveHistogram(_ context.Context, name string, value float64) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	h, ok := r.histograms[name]
+	if !ok {
+		return fmt.Errorf("histogram not registered: %s", name)
+	}
+	for i, upper := range h.buckets {
+		if value <= upper {
+			h.counts[i]++
+		}
+	}
+	h.sum += value
+	h.count++
+	return nil
+}
+
+// HistogramSnapshot returns a snapshot of a histogram's data.
+// Returns (buckets, counts, sum, count, ok).
+func (r *Registry) HistogramSnapshot(name string) ([]float64, []uint64, float64, uint64, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	h, ok := r.histograms[name]
+	if !ok {
+		return nil, nil, 0, 0, false
+	}
+	buckets := append([]float64(nil), h.buckets...)
+	counts := append([]uint64(nil), h.counts...)
+	return buckets, counts, h.sum, h.count, true
 }
 
 func (r *Registry) RegisterMetric(ctx context.Context, desc MetricDescriptor) error {

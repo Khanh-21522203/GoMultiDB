@@ -35,7 +35,7 @@ func TestRemoteBootstrapSessionHappyPath(t *testing.T) {
 			offset += int64(len(chunk))
 		}
 	}
-	if err := m.FinalizeBootstrap(sessionID); err != nil {
+	if err := m.FinalizeWithValidation(sessionID); err != nil {
 		t.Fatalf("finalize: %v", err)
 	}
 }
@@ -72,7 +72,7 @@ func TestRemoteBootstrapFinalizeMissingFile(t *testing.T) {
 	if err := m.StageFileChunk(sessionID, "f1", chunk, crc); err != nil {
 		t.Fatalf("stage f1: %v", err)
 	}
-	if err := m.FinalizeBootstrap(sessionID); err == nil {
+	if err := m.FinalizeWithValidation(sessionID); err == nil {
 		t.Fatalf("expected finalize failure for missing file")
 	}
 }

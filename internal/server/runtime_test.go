@@ -9,6 +9,7 @@ import (
 	"GoMultiDB/internal/query/cql"
 	"GoMultiDB/internal/query/sql"
 	rpcpkg "GoMultiDB/internal/rpc"
+	"GoMultiDB/internal/storage/rocks"
 )
 
 type sqlStub struct {
@@ -60,7 +61,7 @@ func (s *cqlStub) Route(_ context.Context, _ cql.Request) (cql.Response, error) 
 	return cql.Response{Applied: true}, nil
 }
 
-func (s *cqlStub) RouteBatch(_ context.Context, _ cql.BatchRequest) (cql.Response, error) {
+func (s *cqlStub) RouteBatch(_ context.Context, _ any) (cql.Response, error) {
 	if s.healthErr != nil {
 		return cql.Response{}, s.healthErr
 	}
@@ -73,7 +74,8 @@ func makeRuntimeForTest(t *testing.T, cfg Config) *Runtime {
 	if err != nil {
 		t.Fatalf("new rpc server: %v", err)
 	}
-	r, err := NewRuntime(cfg, rpcServer)
+	rocksStore := rocks.NewMemoryStore()
+	r, err := NewRuntime(cfg, rpcServer, rocksStore)
 	if err != nil {
 		t.Fatalf("new runtime: %v", err)
 	}
@@ -133,6 +135,26 @@ func TestLocalCQLServerHealthRetryableWhenStopped(t *testing.T) {
 	n := dberrors.NormalizeError(err)
 	if n.Code != dberrors.ErrRetryableUnavailable {
 		t.Fatalf("expected retryable unavailable, got %s", n.Code)
+	}
+}
+
+func TestRuntimeShutdownPhaseReachesZero(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.NodeID = "tserver-shutdown"
+	r := makeRuntimeForTest(t, cfg)
+	r.sqlCoord = &sqlStub{}
+	r.cqlServer = &cqlStub{}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := r.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if err := r.Stop(ctx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if phase := r.ShutdownPhase(); phase != 0 {
+		t.Fatalf("expected shutdown phase 0 after clean stop, got %d", phase)
 	}
 }
 

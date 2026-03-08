@@ -2,12 +2,15 @@ package heartbeat
 
 import (
 	"context"
+	"encoding/json"
 	"sort"
 	"sync"
 	"time"
 
 	dberrors "GoMultiDB/internal/common/errors"
+	"GoMultiDB/internal/common/types"
 	"GoMultiDB/internal/master/catalog"
+	rpcpkg "GoMultiDB/internal/rpc"
 )
 
 type TSInstance struct {
@@ -289,4 +292,35 @@ func (s *Service) buildActionsResponse(cat *catalog.Manager, planner *catalog.Di
 		actions = append(actions, actionByTablet[id])
 	}
 	return HeartbeatResponse{TabletActions: actions}, nil
+}
+
+// Name returns the service name for RPC registration.
+func (s *Service) Name() string {
+	return "heartbeat"
+}
+
+// Methods returns the RPC method handlers.
+func (s *Service) Methods() map[string]rpcpkg.HandlerFunc {
+	return map[string]rpcpkg.HandlerFunc{
+		"ts_heartbeat": s.tsHeartbeatRPC,
+	}
+}
+
+// tsHeartbeatRPC is the RPC wrapper for TSHeartbeat.
+func (s *Service) tsHeartbeatRPC(ctx context.Context, env types.RequestEnvelope, payload []byte) ([]byte, error) {
+	var req HeartbeatRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return nil, dberrors.New(dberrors.ErrInvalidArgument, "invalid heartbeat request", false, err)
+	}
+
+	resp, err := s.TSHeartbeat(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	b, err := json.Marshal(resp)
+	if err != nil {
+		return nil, dberrors.New(dberrors.ErrInternal, "marshal heartbeat response", false, err)
+	}
+	return b, nil
 }

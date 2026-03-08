@@ -50,10 +50,10 @@ func TestManagerBeginCommitIdempotent(t *testing.T) {
 	reqID := ids.MustNewRequestID()
 	ctx := context.Background()
 
-	if err := m.Begin(ctx, txnID, reqID); err != nil {
+	if err := m.Begin(ctx, txnID, reqID, txn.BeginOptions{}); err != nil {
 		t.Fatalf("begin: %v", err)
 	}
-	if err := m.Begin(ctx, txnID, reqID); err != nil {
+	if err := m.Begin(ctx, txnID, reqID, txn.BeginOptions{}); err != nil {
 		t.Fatalf("idempotent begin failed: %v", err)
 	}
 
@@ -80,7 +80,7 @@ func TestManagerAbort(t *testing.T) {
 	reqID := ids.MustNewRequestID()
 	ctx := context.Background()
 
-	if err := m.Begin(ctx, txnID, reqID); err != nil {
+	if err := m.Begin(ctx, txnID, reqID, txn.BeginOptions{}); err != nil {
 		t.Fatalf("begin: %v", err)
 	}
 	if err := m.Abort(ctx, txnID, reqID); err != nil {
@@ -101,7 +101,7 @@ func TestManagerTimeoutExpiration(t *testing.T) {
 	reqID := ids.MustNewRequestID()
 	ctx := context.Background()
 
-	if err := m.Begin(ctx, txnID, reqID); err != nil {
+	if err := m.Begin(ctx, txnID, reqID, txn.BeginOptions{}); err != nil {
 		t.Fatalf("begin: %v", err)
 	}
 	now = now.Add(200 * time.Millisecond)
@@ -126,7 +126,7 @@ func TestManagerIdempotencyMismatch(t *testing.T) {
 	otherReqID := ids.MustNewRequestID()
 	ctx := context.Background()
 
-	if err := m.Begin(ctx, txnID, reqID); err != nil {
+	if err := m.Begin(ctx, txnID, reqID, txn.BeginOptions{}); err != nil {
 		t.Fatalf("begin: %v", err)
 	}
 	_, err := m.Commit(ctx, txnID, otherReqID, 10)
@@ -152,7 +152,7 @@ func TestExpireStale(t *testing.T) {
 
 	t1 := ids.MustNewTxnID()
 	r1 := ids.MustNewRequestID()
-	if err := m.Begin(ctx, t1, r1); err != nil {
+	if err := m.Begin(ctx, t1, r1, txn.BeginOptions{}); err != nil {
 		t.Fatalf("begin t1: %v", err)
 	}
 
@@ -173,7 +173,7 @@ func TestCommitCallsApplyIntents(t *testing.T) {
 	ctx := context.Background()
 	txnID := ids.MustNewTxnID()
 	reqID := ids.MustNewRequestID()
-	if err := m.Begin(ctx, txnID, reqID); err != nil {
+	if err := m.Begin(ctx, txnID, reqID, txn.BeginOptions{}); err != nil {
 		t.Fatalf("begin: %v", err)
 	}
 	_, err := m.Commit(ctx, txnID, reqID, 777)
@@ -191,7 +191,7 @@ func TestAbortCallsRemoveIntents(t *testing.T) {
 	ctx := context.Background()
 	txnID := ids.MustNewTxnID()
 	reqID := ids.MustNewRequestID()
-	if err := m.Begin(ctx, txnID, reqID); err != nil {
+	if err := m.Begin(ctx, txnID, reqID, txn.BeginOptions{}); err != nil {
 		t.Fatalf("begin: %v", err)
 	}
 	if err := m.Abort(ctx, txnID, reqID); err != nil {
@@ -208,7 +208,7 @@ func TestCommitApplyErrorIsRetryable(t *testing.T) {
 	ctx := context.Background()
 	txnID := ids.MustNewTxnID()
 	reqID := ids.MustNewRequestID()
-	if err := m.Begin(ctx, txnID, reqID); err != nil {
+	if err := m.Begin(ctx, txnID, reqID, txn.BeginOptions{}); err != nil {
 		t.Fatalf("begin: %v", err)
 	}
 	_, err := m.Commit(ctx, txnID, reqID, 10)

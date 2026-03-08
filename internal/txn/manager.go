@@ -25,10 +25,40 @@ type IntentApplier interface {
 	RemoveIntents(ctx context.Context, txnID [16]byte, limit int) (done bool, err error)
 }
 
+// IsolationLevel describes the transaction's consistency guarantee.
+type IsolationLevel int
+
+const (
+	// SerializableIsolation is the strongest level — full serializability.
+	SerializableIsolation IsolationLevel = iota
+	// SnapshotIsolation (Repeatable Read) — reads from a stable snapshot.
+	SnapshotIsolation
+)
+
+// Record is the coordinator-side state for a single distributed transaction.
 type Record struct {
-	TxnID         ids.TxnID
-	State         State
-	CommitHT      uint64
+	TxnID    ids.TxnID
+	State    State
+	CommitHT uint64
+
+	// Priority is used by the conflict resolver and deadlock detector.
+	// Higher values → more important; lower values → preferred victim.
+	Priority uint64
+
+	// StartHT is the hybrid timestamp when Begin() was called.
+	StartHT uint64
+
+	// Isolation level requested by the client.
+	Isolation IsolationLevel
+
+	// StatusTablet is the tablet ID that durably stores this txn's status.
+	// Empty in the current in-memory implementation.
+	StatusTablet ids.TabletID
+
+	// InvolvedTablets accumulates the set of tablets that have received
+	// intents from this transaction. Used by Commit to dispatch apply tasks.
+	InvolvedTablets map[ids.TabletID]struct{}
+
 	LastHeartbeat time.Time
 	RequestID     ids.RequestID
 }
@@ -59,7 +89,15 @@ func NewManager(cfg Config, applier IntentApplier) *Manager {
 	return &Manager{records: make(map[ids.TxnID]Record), cfg: cfg, applier: applier}
 }
 
-func (m *Manager) Begin(_ context.Context, txnID ids.TxnID, reqID ids.RequestID) error {
+// BeginOptions carries optional metadata for a new transaction.
+type BeginOptions struct {
+	Priority     uint64
+	StartHT      uint64
+	Isolation    IsolationLevel
+	StatusTablet ids.TabletID
+}
+
+func (m *Manager) Begin(_ context.Context, txnID ids.TxnID, reqID ids.RequestID, opts BeginOptions) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -69,7 +107,38 @@ func (m *Manager) Begin(_ context.Context, txnID ids.TxnID, reqID ids.RequestID)
 		}
 		return dberrors.New(dberrors.ErrIdempotencyConflict, "txn already exists with different request id", false, nil)
 	}
-	m.records[txnID] = Record{TxnID: txnID, State: Pending, LastHeartbeat: m.cfg.NowFn(), RequestID: reqID}
+	m.records[txnID] = Record{
+		TxnID:           txnID,
+		State:           Pending,
+		Priority:        opts.Priority,
+		StartHT:         opts.StartHT,
+		Isolation:       opts.Isolation,
+		StatusTablet:    opts.StatusTablet,
+		InvolvedTablets: make(map[ids.TabletID]struct{}),
+		LastHeartbeat:   m.cfg.NowFn(),
+		RequestID:       reqID,
+	}
+	return nil
+}
+
+// RegisterTablet adds tabletID to the set of tablets involved in txnID.
+// Idempotent — registering the same tablet multiple times is safe.
+func (m *Manager) RegisterTablet(_ context.Context, txnID ids.TxnID, tabletID ids.TabletID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	rec, ok := m.records[txnID]
+	if !ok {
+		return dberrors.New(dberrors.ErrInvalidArgument, "txn not found", false, nil)
+	}
+	if rec.State == Committed || rec.State == Aborted {
+		return dberrors.New(dberrors.ErrInvalidArgument, "txn is terminal", false, nil)
+	}
+	if rec.InvolvedTablets == nil {
+		rec.InvolvedTablets = make(map[ids.TabletID]struct{})
+	}
+	rec.InvolvedTablets[tabletID] = struct{}{}
+	m.records[txnID] = rec
 	return nil
 }
 

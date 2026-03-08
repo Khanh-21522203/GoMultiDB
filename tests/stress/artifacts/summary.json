@@ -1,12 +1,13 @@
 {
-  "generated_at": "2026-03-07T01:37:51.4734556Z",
+  "generated_at": "2026-03-08T10:12:26.4207662Z",
   "seed": 20260307,
+  "mode": "compose",
   "results": [
     {
       "scenario": "S1_steady_state",
       "passed": true,
-      "duration_ms": 25,
-      "throughput": 30897.574540398582,
+      "duration_ms": 771,
+      "throughput": 15549.046551901745,
       "retry_ratio": 0,
       "lag_upper": 0,
       "checkpoint_staleness": 0,
@@ -15,8 +16,8 @@
     {
       "scenario": "S2_bursty_with_faults",
       "passed": true,
-      "duration_ms": 7,
-      "throughput": 27593.438280376926,
+      "duration_ms": 53,
+      "throughput": 18596.624340749666,
       "retry_ratio": 0.04,
       "lag_upper": 0,
       "checkpoint_staleness": 0,
@@ -25,8 +26,8 @@
     {
       "scenario": "S3_scale_out",
       "passed": true,
-      "duration_ms": 12,
-      "throughput": 32929.12828365151,
+      "duration_ms": 607,
+      "throughput": 15804.149708759154,
       "retry_ratio": 0,
       "lag_upper": 10,
       "checkpoint_staleness": 10,
@@ -35,8 +36,8 @@
     {
       "scenario": "S4_soak",
       "passed": true,
-      "duration_ms": 10000,
-      "throughput": 6028.258378597685,
+      "duration_ms": 30000,
+      "throughput": 1745.867992420139,
       "retry_ratio": 0,
       "lag_upper": 0,
       "checkpoint_staleness": 0,
@@ -44,5 +45,12 @@
     }
   ],
   "passed": true,
-  "top_offenders": []
+  "top_offenders": [],
+  "run_durations_ms": [
+    31141,
+    31517,
+    31607
+  ],
+  "p50_ms": 31517,
+  "p95_ms": 31607
 }

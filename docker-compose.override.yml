@@ -4,24 +4,49 @@ services:
   master:
     environment:
       - MULTIDB_PROFILE=${MULTIDB_PROFILE:-dev}
+    deploy:
+      resources:
+        limits:
+          cpus: "${MASTER_CPU_LIMIT:-1.0}"
+          memory: ${MASTER_MEM_LIMIT:-512M}
 
   tserver-1:
     environment:
       - MULTIDB_PROFILE=${MULTIDB_PROFILE:-dev}
+    deploy:
+      resources:
+        limits:
+          cpus: "${TSERVER_CPU_LIMIT:-1.0}"
+          memory: ${TSERVER_MEM_LIMIT:-512M}
 
   tserver-2:
     environment:
       - MULTIDB_PROFILE=${MULTIDB_PROFILE:-dev}
+    deploy:
+      resources:
+        limits:
+          cpus: "${TSERVER_CPU_LIMIT:-1.0}"
+          memory: ${TSERVER_MEM_LIMIT:-512M}
 
   tserver-3:
     environment:
       - MULTIDB_PROFILE=${MULTIDB_PROFILE:-dev}
+    deploy:
+      resources:
+        limits:
+          cpus: "${TSERVER_CPU_LIMIT:-1.0}"
+          memory: ${TSERVER_MEM_LIMIT:-512M}
 
   # Optional stress profile service placeholder (enable with --profile stress)
   loadgen:
     profiles: ["stress"]
     image: alpine:3.21
-    command: ["sh", "-c", "echo stress profile placeholder && sleep infinity"]
+    command: ["sh", "-c", "echo stress profile loadgen online && sleep infinity"]
+    deploy:
+      resources:
+        limits:
+          cpus: "${LOADGEN_CPU_LIMIT:-1.0}"
+          memory: ${LOADGEN_MEM_LIMIT:-512M}
     networks:
       - multidb-net
 

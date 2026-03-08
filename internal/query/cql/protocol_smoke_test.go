@@ -1,16 +1,16 @@
-package ycql
+package cql
 
 import (
 	"context"
 	"testing"
 )
 
-func TestPhase5SmokeYCQLProtocolSurface(t *testing.T) {
+func TestPhase5SmokeCQLProtocolSurface(t *testing.T) {
 	s := NewLocalServer()
 	ctx := context.Background()
 
 	if err := s.Start(ctx, Config{Enabled: true, BindAddress: "127.0.0.1:9042", MaxConnections: 4}); err != nil {
-		t.Fatalf("start ycql server: %v", err)
+		t.Fatalf("start cql server: %v", err)
 	}
 	defer func() {
 		_ = s.Stop(ctx)

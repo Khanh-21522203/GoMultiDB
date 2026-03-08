@@ -7,8 +7,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"GoMultiDB/internal/query/ycql"
-	"GoMultiDB/internal/query/ysql"
+	"GoMultiDB/internal/query/cql"
+	"GoMultiDB/internal/query/sql"
 	rpcpkg "GoMultiDB/internal/rpc"
 )
 
@@ -25,8 +25,8 @@ type Runtime struct {
 
 	rpcServer *rpcpkg.Server
 	clock     Clock
-	ysql      ysql.Coordinator
-	ycql      ycql.Server
+	sqlCoord  sql.Coordinator
+	cqlServer cql.Server
 
 	mu      sync.Mutex
 	started bool
@@ -52,8 +52,8 @@ func NewRuntime(cfg Config, rpcServer *rpcpkg.Server) (*Runtime, error) {
 		cfg:       cfg,
 		rpcServer: rpcServer,
 		clock:     systemClock{},
-		ysql:      ysql.NewLocalCoordinator(),
-		ycql:      ycql.NewLocalServer(),
+		sqlCoord:  sql.NewLocalCoordinator(),
+		cqlServer: cql.NewLocalServer(),
 	}, nil
 }
 
@@ -76,8 +76,8 @@ func (r *Runtime) Start(ctx context.Context) error {
 	if err := r.rpcServer.Start(ctx); err != nil {
 		return err
 	}
-	if r.ysql != nil {
-		if err := r.ysql.Start(ctx, ysql.ProcessConfig{
+	if r.sqlCoord != nil {
+		if err := r.sqlCoord.Start(ctx, sql.ProcessConfig{
 			Enabled:        r.cfg.EnableYSQL,
 			BindAddress:    r.cfg.YSQLBindAddress,
 			MaxConnections: r.cfg.YSQLMaxConnections,
@@ -86,14 +86,14 @@ func (r *Runtime) Start(ctx context.Context) error {
 			return err
 		}
 	}
-	if r.ycql != nil {
-		if err := r.ycql.Start(ctx, ycql.Config{
+	if r.cqlServer != nil {
+		if err := r.cqlServer.Start(ctx, cql.Config{
 			Enabled:        r.cfg.EnableYCQL,
 			BindAddress:    r.cfg.YCQLBindAddress,
 			MaxConnections: r.cfg.YCQLMaxConnections,
 		}); err != nil {
-			if r.ysql != nil {
-				_ = r.ysql.Stop(context.Background())
+			if r.sqlCoord != nil {
+				_ = r.sqlCoord.Stop(context.Background())
 			}
 			_ = r.rpcServer.Stop(context.Background())
 			return err
@@ -112,13 +112,13 @@ func (r *Runtime) Stop(ctx context.Context) error {
 	if !r.started {
 		return nil
 	}
-	if r.ycql != nil {
-		if err := r.ycql.Stop(ctx); err != nil {
+	if r.cqlServer != nil {
+		if err := r.cqlServer.Stop(ctx); err != nil {
 			return err
 		}
 	}
-	if r.ysql != nil {
-		if err := r.ysql.Stop(ctx); err != nil {
+	if r.sqlCoord != nil {
+		if err := r.sqlCoord.Stop(ctx); err != nil {
 			return err
 		}
 	}
@@ -131,10 +131,10 @@ func (r *Runtime) StartYSQL(ctx context.Context) error {
 		return ctx.Err()
 	default:
 	}
-	if r.ysql == nil {
+	if r.sqlCoord == nil {
 		return nil
 	}
-	return r.ysql.Start(ctx, ysql.ProcessConfig{
+	return r.sqlCoord.Start(ctx, sql.ProcessConfig{
 		Enabled:        r.cfg.EnableYSQL,
 		BindAddress:    r.cfg.YSQLBindAddress,
 		MaxConnections: r.cfg.YSQLMaxConnections,
@@ -147,10 +147,10 @@ func (r *Runtime) StopYSQL(ctx context.Context) error {
 		return ctx.Err()
 	default:
 	}
-	if r.ysql == nil {
+	if r.sqlCoord == nil {
 		return nil
 	}
-	return r.ysql.Stop(ctx)
+	return r.sqlCoord.Stop(ctx)
 }
 
 func (r *Runtime) GetYSQLStatus(ctx context.Context) (YSQLStatus, error) {
@@ -159,11 +159,11 @@ func (r *Runtime) GetYSQLStatus(ctx context.Context) (YSQLStatus, error) {
 		return YSQLStatus{}, ctx.Err()
 	default:
 	}
-	if r.ysql == nil {
+	if r.sqlCoord == nil {
 		return YSQLStatus{Enabled: false, Healthy: false}, nil
 	}
 	status := YSQLStatus{Enabled: r.cfg.EnableYSQL}
-	if err := r.ysql.Health(ctx); err != nil {
+	if err := r.sqlCoord.Health(ctx); err != nil {
 		return status, nil
 	}
 	status.Healthy = true

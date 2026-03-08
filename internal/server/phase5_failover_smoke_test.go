@@ -6,7 +6,7 @@ import (
 	"time"
 
 	dberrors "GoMultiDB/internal/common/errors"
-	"GoMultiDB/internal/query/ysql"
+	"GoMultiDB/internal/query/sql"
 	rpcpkg "GoMultiDB/internal/rpc"
 )
 
@@ -42,11 +42,11 @@ func TestPhase5FailoverRuntimeYSQLStatusTransition(t *testing.T) {
 		t.Fatalf("expected healthy before induced failover")
 	}
 
-	y, ok := r.ysql.(*ysql.LocalCoordinator)
+	s, ok := r.sqlCoord.(*sql.LocalCoordinator)
 	if !ok {
 		t.Fatalf("expected local coordinator")
 	}
-	if err := y.Stop(ctx); err != nil {
+	if err := s.Stop(ctx); err != nil {
 		t.Fatalf("induce stop as failover simulation: %v", err)
 	}
 
@@ -58,7 +58,7 @@ func TestPhase5FailoverRuntimeYSQLStatusTransition(t *testing.T) {
 		t.Fatalf("expected unhealthy status after induced failover")
 	}
 
-	n := dberrors.NormalizeError(y.Health(ctx))
+	n := dberrors.NormalizeError(s.Health(ctx))
 	if n.Code != dberrors.ErrRetryableUnavailable {
 		t.Fatalf("expected retryable unavailable after induced failover, got %s", n.Code)
 	}

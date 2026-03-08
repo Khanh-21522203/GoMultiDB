@@ -1,4 +1,4 @@
-package ysql
+package sql
 
 import (
 	"context"
@@ -40,7 +40,7 @@ func (c *LocalCoordinator) Start(ctx context.Context, cfg ProcessConfig) error {
 	}
 	if cfg.Enabled {
 		if cfg.BindAddress == "" {
-			return dberrors.New(dberrors.ErrInvalidArgument, "ysql bind address is required when enabled", false, nil)
+			return dberrors.New(dberrors.ErrInvalidArgument, "sql bind address is required when enabled", false, nil)
 		}
 		if cfg.MaxConnections <= 0 {
 			cfg.MaxConnections = 300
@@ -53,7 +53,7 @@ func (c *LocalCoordinator) Start(ctx context.Context, cfg ProcessConfig) error {
 		if processConfigEqual(c.cfg, cfg) {
 			return nil
 		}
-		return dberrors.New(dberrors.ErrConflict, "ysql coordinator already started with different config", false, nil)
+		return dberrors.New(dberrors.ErrConflict, "sql coordinator already started with different config", false, nil)
 	}
 	c.started = true
 	c.cfg = cfg
@@ -82,7 +82,7 @@ func (c *LocalCoordinator) Health(ctx context.Context) error {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	if !c.started {
-		return dberrors.New(dberrors.ErrRetryableUnavailable, "ysql is not started", true, nil)
+		return dberrors.New(dberrors.ErrRetryableUnavailable, "sql is not started", true, nil)
 	}
 	return nil
 }

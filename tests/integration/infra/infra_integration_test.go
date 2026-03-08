@@ -14,8 +14,8 @@ import (
 	"GoMultiDB/internal/replication/cdc"
 	"GoMultiDB/internal/replication/controlplane"
 	"GoMultiDB/internal/replication/xcluster"
-	"GoMultiDB/internal/query/ycql"
-	"GoMultiDB/internal/query/ysql"
+	"GoMultiDB/internal/query/cql"
+	"GoMultiDB/internal/query/sql"
 )
 
 type noopApplier struct{}
@@ -143,21 +143,21 @@ func TestInfraCriticalPaths(t *testing.T) {
 	})
 
 	run("query_layer_smoke", func() error {
-		coord := ysql.NewLocalCoordinator()
-		if err := coord.Start(ctx, ysql.ProcessConfig{Enabled: true, BindAddress: "127.0.0.1:55433"}); err != nil {
+		coord := sql.NewLocalCoordinator()
+		if err := coord.Start(ctx, sql.ProcessConfig{Enabled: true, BindAddress: "127.0.0.1:55433"}); err != nil {
 			return err
 		}
 		defer func() { _ = coord.Stop(context.Background()) }()
 
-		srv := ycql.NewLocalServer()
-		if err := srv.Start(ctx, ycql.Config{Enabled: true, BindAddress: "127.0.0.1:59042", MaxConnections: 8}); err != nil {
+		srv := cql.NewLocalServer()
+		if err := srv.Start(ctx, cql.Config{Enabled: true, BindAddress: "127.0.0.1:59042", MaxConnections: 8}); err != nil {
 			return err
 		}
 		defer func() { _ = srv.Stop(context.Background()) }()
 		if err := srv.OpenConnection(ctx, "c1"); err != nil {
 			return err
 		}
-		_, err := srv.Route(ctx, ycql.Request{ConnID: "c1", Query: "SELECT now()"})
+		_, err := srv.Route(ctx, cql.Request{ConnID: "c1", Query: "SELECT now()"})
 		return err
 	})
 

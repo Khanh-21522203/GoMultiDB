@@ -1,4 +1,4 @@
-package ycql
+package cql
 
 import (
 	"context"

@@ -122,6 +122,12 @@
 - [x] Add quick stress profile (developer machine friendly).
 - [x] Add standard stress profile (CI/nightly friendly).
 
+### C5. Container-Backed Stress Mode
+- [ ] Add `stress-run` mode switch (`local` vs `compose`).
+- [ ] In compose mode: compose up, health wait, run stress workload, capture logs/artifacts.
+- [ ] Add optional teardown control for compose mode.
+- [ ] Update stress report to show execution mode and benchmark caveats.
+
 ---
 
 ## Track D — CI/Automation Integration

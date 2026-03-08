@@ -1,4 +1,4 @@
-package ysql
+package sql
 
 import (
 	"context"

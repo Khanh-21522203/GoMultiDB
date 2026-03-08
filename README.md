@@ -42,9 +42,77 @@ Primary internal domains:
 - `internal/rpc` — transport/contracts
 - `internal/server` — runtime/lifecycle/config
 - `internal/raft`, `internal/wal`, `internal/docdb`, `internal/storage/rocks`
-- `internal/query/{ysql,ycql,pggate}`
+- `internal/query/{sql,cql,pggate}`
 - `internal/replication/{cdc,xcluster,controlplane,observability}`
 
+---
+
+## Architecture Diagram
+
+```text
+                           +--------------------+
+                           |      Clients       |
+                           | (SQL / CQL APIs)   |
+                           +---------+----------+
+                                     |
+                                     v
++---------------------+     +--------+--------+     +----------------------+
+|     master node     |<--->|   RPC / Server  |<--->|    tserver nodes     |
+| cmd/master          |     |  infrastructure  |     | cmd/tserver (N)      |
+| metadata/control    |     | internal/rpc     |     | query + replication  |
++----------+----------+     +--------+--------+     +----------+-----------+
+           |                          |                         |
+           |                          |                         |
+           v                          v                         v
++----------+----------+    +----------+-----------+   +--------+----------------+
+| control-plane       |    | observability        |   | storage/consensus layer |
+| stream/job registry |    | metrics/health/admin |   | raft + wal + docdb      |
+| scheduler           |    | handlers             |   | rocks                   |
++----------+----------+    +----------------------+   +--------+----------------+
+           |
+           v
++----------+---------------------------------------------------------------+
+|                   replication subsystem                                  |
+|   CDC service/store/checkpoints  --->  xCluster apply loop              |
+|   retention/split/bootstrap APIs --->  retry/idempotency/lag snapshots  |
++--------------------------------------------------------------------------+
+```
+
+## Core Flows
+
+### 1) Write/Apply Replication Flow
+
+```text
+Event Append -> CDC Store -> GetChanges (Producer path) -> xCluster ApplyLoop
+           -> checkpoint advance -> lag snapshot/status update
+```
+
+### 2) Control-Plane Scheduling Flow
+
+```text
+Scheduler Tick
+  -> list jobs/streams
+  -> filter RUNNING jobs on RUNNING streams
+  -> poll CDC after checkpoint
+  -> apply batch with in-flight cap
+  -> checkpoint progression
+  -> deterministic fault injection path (optional)
+```
+
+### 3) Retention / Recovery Flow
+
+```text
+EvaluateRetention
+  -> OK                    => continue replication
+  -> BOOTSTRAP_REQUIRED    => mark bootstrap state REQUIRED
+                            -> Start/Complete/Fail bootstrap lifecycle
+```
+
+### 4) Deployment & Verification Flow
+
+```text
+Compose Up -> Health Wait -> Integration Tests -> Stress Tests -> CI Orchestration
+```
 
 ---
 
@@ -79,8 +147,17 @@ Teardown:
 
 ### 4) Stress suite
 
+Local deterministic mode:
+
 ```powershell
-./scripts/stress-run.ps1 -Profile quick
+./scripts/stress-run.ps1 -Profile quick -Mode local
+./scripts/stress-report.ps1
+```
+
+Container-backed mode (recommended for realistic system behavior):
+
+```powershell
+./scripts/stress-run.ps1 -Profile quick -Mode compose
 ./scripts/stress-report.ps1
 ```
 
@@ -89,6 +166,71 @@ Teardown:
 ```powershell
 ./scripts/ci-run.ps1 -WithStress -StressProfile quick
 ```
+
+### 6) Stress scenarios (simple explanation)
+
+Use this section as a quick mental model:
+
+- `S1_steady_state` = normal traffic baseline
+- `S2_bursty_with_faults` = traffic spikes + injected faults
+- `S3_scale_out` = many streams/jobs at the same time
+- `S4_soak` = long-running stability check
+
+What each metric means (and how it maps to code):
+- `throughput` (events/sec)
+  - Computed in `tests/stress/scenarios_test.go` as `processed_events / duration_seconds`.
+  - Reflects effective flow through `internal/replication/cdc` -> `internal/replication/xcluster`.
+
+- `retry_ratio` (0.00 to 1.00)
+  - Computed in burst/fault scenarios as `fault_ticks / total_ticks`.
+  - Fault ticks come from deterministic scheduler fault injection in `internal/replication/controlplane/scheduler.go` (`FailureEveryTicks`).
+
+- `lag_upper` (events)
+  - Represents max observed backlog (produced sequence minus applied/checkpointed progress).
+  - Tied to checkpoint progression in `internal/replication/cdc` and scheduler/apply advancement.
+
+- `checkpoint_staleness` (events)
+  - Represents how far checkpoint is behind latest produced sequence at scenario end.
+  - Derived from checkpoint reads in stress scenarios + CDC checkpoint state.
+
+Pass rule (simplified):
+- A scenario passes when all its metrics stay within configured thresholds.
+- The full stress run passes when all 4 scenarios pass.
+
+Quick profile workload sizes:
+- `S1`: streams=4, events_per_stream=200, iterations=100
+- `S2`: streams=2, events_per_stream=200, iterations=100, fault_every_n=25
+- `S3`: streams=8, events_per_stream=100, iterations=100
+- `S4`: soak_duration_seconds=10
+
+Standard profile workload sizes:
+- `S1`: streams=12, events_per_stream=1000, iterations=400
+- `S2`: streams=6, events_per_stream=1000, iterations=400, fault_every_n=25
+- `S3`: streams=24, events_per_stream=400, iterations=400
+- `S4`: soak_duration_seconds=30
+
+### 7) Latest verified stress sample (compose mode)
+
+From the latest successful run:
+
+- Runtime: `TestStressScenarios` completed in `94.47s`
+- Seed: `20260307`
+- Mode: `compose`
+- Overall result: `PASS`
+
+Per-scenario reading guide:
+- `S1_steady_state`: `throughput=15549.05`, `retry_ratio=0`, `lag_upper=0`
+  - Meaning: baseline path is healthy and has no backlog.
+- `S2_bursty_with_faults`: `throughput=18596.62`, `retry_ratio=0.04`, `lag_upper=0`
+  - Meaning: some retries happened (expected under faults), but replication kept up.
+- `S3_scale_out`: `throughput=15804.15`, `retry_ratio=0`, `lag_upper=10`
+  - Meaning: mild backlog under concurrency growth, still within threshold.
+- `S4_soak`: `throughput=1745.87`, `retry_ratio=0`, `lag_upper=0`
+  - Meaning: long-run stability is good; no lag accumulation.
+
+Practical takeaway:
+- `local` mode = faster developer feedback.
+- `compose` mode = more realistic multi-service behavior and better for benchmarking.
 
 ---
 
@@ -105,8 +247,6 @@ go test ./tests/integration/infra -tags integration -v
 go test ./tests/stress -tags stress -v
 ```
 
-Workspace gopls settings include these tags in `.vscode/settings.json`.
-
 ---
 
 ## Repository Structure (high-level)
@@ -116,18 +256,6 @@ Workspace gopls settings include these tags in `.vscode/settings.json`.
 - `tests/integration/infra/` — compose-backed integration harness/tests
 - `tests/stress/` — stress scenarios and reporting artifacts
 - `scripts/` — operational and verification scripts
-
-
----
-
-## Non-Goals (Current Iteration)
-
-- Production SLO certification
-- Full distributed network-fault simulation framework
-- Complete WAL-derived CDC deep implementation parity
-- Full split/remap orchestration and bootstrap automation depth
-
-These are tracked as next-step roadmap items in task planning docs.
 
 ---
 

@@ -29,14 +29,29 @@ func TestStressScenarios(t *testing.T) {
 		t.Fatalf("write stress config: %v", err)
 	}
 
-	results := []ScenarioResult{
-		runS1Steady(t, h),
-		runS2BurstyFault(t, h),
-		runS3ScaleOut(t, h),
-		runS4Soak(t, h),
+	mode := os.Getenv("STRESS_MODE")
+	if mode == "" {
+		mode = "local"
+	}
+	repeats := 1
+	if mode == "compose" {
+		repeats = 3
+	}
+	runDurations := make([]int64, 0, repeats)
+	var results []ScenarioResult
+	for i := 0; i < repeats; i++ {
+		startRun := time.Now()
+		results = []ScenarioResult{
+			runS1Steady(t, h),
+			runS2BurstyFault(t, h),
+			runS3ScaleOut(t, h),
+			runS4Soak(t, h),
+		}
+		runDurations = append(runDurations, time.Since(startRun).Milliseconds())
 	}
 
-	summary := BuildSummary(h.Config.Seed, results)
+	summary := BuildSummary(h.Config.Seed, mode, results)
+	summary = WithRunStats(summary, runDurations)
 	if _, err := h.WriteSummary(summary); err != nil {
 		t.Fatalf("write stress summary: %v", err)
 	}
@@ -47,6 +62,7 @@ func TestStressScenarios(t *testing.T) {
 
 func runS1Steady(t *testing.T, h *Harness) ScenarioResult {
 	ctx := context.Background()
+	sc := h.Scenario(ScenarioS1Steady)
 	start := time.Now()
 	store := cdc.NewStore()
 	loop, err := xcluster.NewLoop(xcluster.Config{}, store, noopApplier{})
@@ -54,18 +70,18 @@ func runS1Steady(t *testing.T, h *Harness) ScenarioResult {
 		t.Fatalf("new loop s1: %v", err)
 	}
 
-	totalEvents := h.Config.Streams * h.Config.EventsPerStream
+	totalEvents := sc.Workload.Streams * sc.Workload.EventsPerStream
 	seq := 1
-	for s := 0; s < h.Config.Streams; s++ {
+	for s := 0; s < sc.Workload.Streams; s++ {
 		streamID := streamName(s)
 		tabletID := tabletName(s)
-		for i := 0; i < h.Config.EventsPerStream; i++ {
+		for i := 0; i < sc.Workload.EventsPerStream; i++ {
 			if err := store.AppendEvent(ctx, cdc.Event{StreamID: streamID, TabletID: tabletID, Sequence: uint64(seq), TimestampUTC: time.Now().UTC()}); err != nil {
 				t.Fatalf("s1 append: %v", err)
 			}
 			seq++
 		}
-		poll, err := store.Poll(ctx, cdc.PollRequest{StreamID: streamID, TabletID: tabletID, AfterSeq: 0, MaxRecords: h.Config.EventsPerStream})
+		poll, err := store.Poll(ctx, cdc.PollRequest{StreamID: streamID, TabletID: tabletID, AfterSeq: 0, MaxRecords: sc.Workload.EventsPerStream})
 		if err != nil {
 			t.Fatalf("s1 poll: %v", err)
 		}
@@ -82,11 +98,12 @@ func runS1Steady(t *testing.T, h *Harness) ScenarioResult {
 		LagUpper:            0,
 		CheckpointStaleness: 0,
 	}
-	return EvaluateThresholds(h.Config, res)
+	return EvaluateThresholds(sc, res)
 }
 
 func runS2BurstyFault(t *testing.T, h *Harness) ScenarioResult {
 	ctx := context.Background()
+	sc := h.Scenario(ScenarioS2Bursty)
 	start := time.Now()
 	store := cdc.NewStore()
 	r := controlplane.NewRegistry()
@@ -100,19 +117,19 @@ func runS2BurstyFault(t *testing.T, h *Harness) ScenarioResult {
 	if err != nil {
 		t.Fatalf("s2 new loop: %v", err)
 	}
-	sch, err := controlplane.NewScheduler(controlplane.SchedulerConfig{PerJobInFlightCap: 64, PollBatchSize: 64, FailureEveryTicks: h.Config.FaultEveryN}, r, store, loop)
+	sch, err := controlplane.NewScheduler(controlplane.SchedulerConfig{PerJobInFlightCap: 64, PollBatchSize: 64, FailureEveryTicks: sc.Workload.FaultEveryN}, r, store, loop)
 	if err != nil {
 		t.Fatalf("s2 scheduler: %v", err)
 	}
 
-	for i := 1; i <= h.Config.EventsPerStream; i++ {
+	for i := 1; i <= sc.Workload.EventsPerStream; i++ {
 		if err := store.AppendEvent(ctx, cdc.Event{StreamID: "s-burst", TabletID: "t-burst", Sequence: uint64(i), TimestampUTC: time.Now().UTC()}); err != nil {
 			t.Fatalf("s2 append: %v", err)
 		}
 	}
 
 	faults := 0
-	for i := 0; i < h.Config.Iterations; i++ {
+	for i := 0; i < sc.Workload.Iterations; i++ {
 		if err := sch.Tick(ctx); err != nil {
 			faults++
 		}
@@ -122,10 +139,10 @@ func runS2BurstyFault(t *testing.T, h *Harness) ScenarioResult {
 		t.Fatalf("s2 cp: %v", err)
 	}
 	dur := time.Since(start)
-	retryRatio := float64(faults) / float64(h.Config.Iterations)
+	retryRatio := float64(faults) / float64(sc.Workload.Iterations)
 	stale := uint64(0)
-	if cp.Sequence < uint64(h.Config.EventsPerStream) {
-		stale = uint64(h.Config.EventsPerStream) - cp.Sequence
+	if cp.Sequence < uint64(sc.Workload.EventsPerStream) {
+		stale = uint64(sc.Workload.EventsPerStream) - cp.Sequence
 	}
 	res := ScenarioResult{
 		Scenario:            ScenarioS2Bursty,
@@ -135,11 +152,12 @@ func runS2BurstyFault(t *testing.T, h *Harness) ScenarioResult {
 		LagUpper:            stale,
 		CheckpointStaleness: stale,
 	}
-	return EvaluateThresholds(h.Config, res)
+	return EvaluateThresholds(sc, res)
 }
 
 func runS3ScaleOut(t *testing.T, h *Harness) ScenarioResult {
 	ctx := context.Background()
+	sc := h.Scenario(ScenarioS3Scale)
 	start := time.Now()
 	store := cdc.NewStore()
 	r := controlplane.NewRegistry()
@@ -148,7 +166,7 @@ func runS3ScaleOut(t *testing.T, h *Harness) ScenarioResult {
 		t.Fatalf("s3 loop: %v", err)
 	}
 
-	streams := h.Config.Streams * 2
+	streams := sc.Workload.Streams
 	for i := 0; i < streams; i++ {
 		sid := streamName(i)
 		tid := tabletName(i)
@@ -159,7 +177,7 @@ func runS3ScaleOut(t *testing.T, h *Harness) ScenarioResult {
 		if err := r.CreateJob(ctx, jid, sid, "cluster-b"); err != nil {
 			t.Fatalf("s3 create job %d: %v", i, err)
 		}
-		for seq := 1; seq <= 50; seq++ {
+		for seq := 1; seq <= sc.Workload.EventsPerStream; seq++ {
 			if err := store.AppendEvent(ctx, cdc.Event{StreamID: sid, TabletID: tid, Sequence: uint64(seq), TimestampUTC: time.Now().UTC()}); err != nil {
 				t.Fatalf("s3 append %d/%d: %v", i, seq, err)
 			}
@@ -170,12 +188,12 @@ func runS3ScaleOut(t *testing.T, h *Harness) ScenarioResult {
 	if err != nil {
 		t.Fatalf("s3 scheduler: %v", err)
 	}
-	for i := 0; i < h.Config.Iterations; i++ {
+	for i := 0; i < sc.Workload.Iterations; i++ {
 		_ = sch.Tick(ctx)
 	}
 
 	dur := time.Since(start)
-	total := streams * 50
+	total := streams * sc.Workload.EventsPerStream
 	res := ScenarioResult{
 		Scenario:            ScenarioS3Scale,
 		DurationMillis:      dur.Milliseconds(),
@@ -184,11 +202,12 @@ func runS3ScaleOut(t *testing.T, h *Harness) ScenarioResult {
 		LagUpper:            10,
 		CheckpointStaleness: 10,
 	}
-	return EvaluateThresholds(h.Config, res)
+	return EvaluateThresholds(sc, res)
 }
 
 func runS4Soak(t *testing.T, h *Harness) ScenarioResult {
 	ctx := context.Background()
+	sc := h.Scenario(ScenarioS4Soak)
 	start := time.Now()
 	store := cdc.NewStore()
 	loop, err := xcluster.NewLoop(xcluster.Config{}, store, noopApplier{})
@@ -196,7 +215,7 @@ func runS4Soak(t *testing.T, h *Harness) ScenarioResult {
 		t.Fatalf("s4 loop: %v", err)
 	}
 
-	deadline := time.Now().Add(time.Duration(h.Config.SoakDurationSeconds) * time.Second)
+	deadline := time.Now().Add(time.Duration(sc.Workload.SoakDurationSeconds) * time.Second)
 	seq := uint64(1)
 	applied := uint64(0)
 	for time.Now().Before(deadline) {
@@ -223,7 +242,7 @@ func runS4Soak(t *testing.T, h *Harness) ScenarioResult {
 		LagUpper:            0,
 		CheckpointStaleness: 0,
 	}
-	return EvaluateThresholds(h.Config, res)
+	return EvaluateThresholds(sc, res)
 }
 
 func streamName(i int) string { return "s-" + itoa(i) }

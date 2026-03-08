@@ -1,6 +1,6 @@
 {
-  "started_at": "2026-03-07T01:35:55.9775981Z",
-  "finished_at": "2026-03-07T01:37:35.5212242Z",
+  "started_at": "2026-03-08T09:23:46.6360388Z",
+  "finished_at": "2026-03-08T09:25:46.8065455Z",
   "passed": true,
   "scenarios": {
     "cdc_stream_lifecycle": "passed",

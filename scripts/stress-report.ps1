@@ -9,6 +9,7 @@ if (!(Test-Path $summaryPath)) {
 $summary = Get-Content $summaryPath -Raw | ConvertFrom-Json
 Write-Host "[stress-report] generated_at: $($summary.generated_at)"
 Write-Host "[stress-report] seed: $($summary.seed)"
+Write-Host "[stress-report] mode: $($summary.mode)"
 Write-Host "[stress-report] passed: $($summary.passed)"
 
 Write-Host "[stress-report] scenario results:"
@@ -21,3 +22,9 @@ if ($summary.top_offenders.Count -gt 0) {
 } else {
   Write-Host "[stress-report] no offenders"
 }
+
+Write-Host ""
+Write-Host "[stress-report] benchmark caveats:"
+Write-Host "- local mode is fast/deterministic but not full infra-realistic"
+Write-Host "- compose mode includes container/runtime overhead and is closer to deployment behavior"
+Write-Host "- compare runs with same profile/seed/mode for stable trend analysis"

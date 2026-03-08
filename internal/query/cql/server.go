@@ -1,4 +1,4 @@
-package ycql
+package cql
 
 import (
 	"context"
@@ -74,7 +74,7 @@ func (s *LocalServer) Start(ctx context.Context, cfg Config) error {
 	}
 	if cfg.Enabled {
 		if cfg.BindAddress == "" {
-			return dberrors.New(dberrors.ErrInvalidArgument, "ycql bind address is required when enabled", false, nil)
+			return dberrors.New(dberrors.ErrInvalidArgument, "cql bind address is required when enabled", false, nil)
 		}
 		if cfg.MaxConnections <= 0 {
 			cfg.MaxConnections = 1000
@@ -87,7 +87,7 @@ func (s *LocalServer) Start(ctx context.Context, cfg Config) error {
 		if s.cfg == cfg {
 			return nil
 		}
-		return dberrors.New(dberrors.ErrConflict, "ycql server already started with different config", false, nil)
+		return dberrors.New(dberrors.ErrConflict, "cql server already started with different config", false, nil)
 	}
 	s.started = true
 	s.cfg = cfg
@@ -118,7 +118,7 @@ func (s *LocalServer) Health(ctx context.Context) error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if !s.started {
-		return dberrors.New(dberrors.ErrRetryableUnavailable, "ycql is not started", true, nil)
+		return dberrors.New(dberrors.ErrRetryableUnavailable, "cql is not started", true, nil)
 	}
 	return nil
 }
@@ -157,7 +157,7 @@ func (s *LocalServer) OpenConnection(ctx context.Context, connID string) error {
 	}
 	if s.cfg.MaxConnections > 0 && len(s.activeConns) >= s.cfg.MaxConnections {
 		s.mu.Unlock()
-		return dberrors.New(dberrors.ErrRetryableUnavailable, "ycql max connections reached", true, nil)
+		return dberrors.New(dberrors.ErrRetryableUnavailable, "cql max connections reached", true, nil)
 	}
 	s.activeConns[connID] = struct{}{}
 	s.mu.Unlock()

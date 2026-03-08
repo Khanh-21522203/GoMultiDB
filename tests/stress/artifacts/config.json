@@ -1,13 +1,65 @@
 {
   "seed": 20260307,
-  "scenario": "S1_steady_state",
-  "iterations": 100,
-  "streams": 4,
-  "events_per_stream": 200,
-  "fault_every_n": 25,
-  "soak_duration_seconds": 10,
-  "threshold_throughput": 100,
-  "threshold_retry_ratio": 0.2,
-  "threshold_lag_upper": 10,
-  "threshold_checkpoint_stale": 50
+  "scenarios": {
+    "S1_steady_state": {
+      "workload": {
+        "iterations": 400,
+        "streams": 12,
+        "events_per_stream": 1000,
+        "fault_every_n": 0,
+        "soak_duration_seconds": 0
+      },
+      "thresholds": {
+        "throughput": 200,
+        "retry_ratio": 0.05,
+        "lag_upper": 0,
+        "checkpoint_staleness": 20
+      }
+    },
+    "S2_bursty_with_faults": {
+      "workload": {
+        "iterations": 400,
+        "streams": 6,
+        "events_per_stream": 1000,
+        "fault_every_n": 25,
+        "soak_duration_seconds": 0
+      },
+      "thresholds": {
+        "throughput": 150,
+        "retry_ratio": 0.25,
+        "lag_upper": 30,
+        "checkpoint_staleness": 100
+      }
+    },
+    "S3_scale_out": {
+      "workload": {
+        "iterations": 400,
+        "streams": 24,
+        "events_per_stream": 400,
+        "fault_every_n": 0,
+        "soak_duration_seconds": 0
+      },
+      "thresholds": {
+        "throughput": 160,
+        "retry_ratio": 0.05,
+        "lag_upper": 50,
+        "checkpoint_staleness": 120
+      }
+    },
+    "S4_soak": {
+      "workload": {
+        "iterations": 0,
+        "streams": 1,
+        "events_per_stream": 0,
+        "fault_every_n": 0,
+        "soak_duration_seconds": 30
+      },
+      "thresholds": {
+        "throughput": 30,
+        "retry_ratio": 0.05,
+        "lag_upper": 10,
+        "checkpoint_staleness": 20
+      }
+    }
+  }
 }

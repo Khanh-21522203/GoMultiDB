@@ -6,65 +6,65 @@ import (
 	"time"
 
 	dberrors "GoMultiDB/internal/common/errors"
-	"GoMultiDB/internal/query/ycql"
-	"GoMultiDB/internal/query/ysql"
+	"GoMultiDB/internal/query/cql"
+	"GoMultiDB/internal/query/sql"
 	rpcpkg "GoMultiDB/internal/rpc"
 )
 
-type ysqlStub struct {
+type sqlStub struct {
 	startCalls int
 	stopCalls  int
 	healthErr  error
 }
 
-func (s *ysqlStub) Start(_ context.Context, _ ysql.ProcessConfig) error {
+func (s *sqlStub) Start(_ context.Context, _ sql.ProcessConfig) error {
 	s.startCalls++
 	s.healthErr = nil
 	return nil
 }
 
-func (s *ysqlStub) Stop(_ context.Context) error {
+func (s *sqlStub) Stop(_ context.Context) error {
 	s.stopCalls++
-	s.healthErr = dberrors.New(dberrors.ErrRetryableUnavailable, "ysql is not started", true, nil)
+	s.healthErr = dberrors.New(dberrors.ErrRetryableUnavailable, "sql is not started", true, nil)
 	return nil
 }
 
-func (s *ysqlStub) Health(_ context.Context) error {
+func (s *sqlStub) Health(_ context.Context) error {
 	return s.healthErr
 }
 
-type ycqlStub struct {
+type cqlStub struct {
 	startCalls int
 	stopCalls  int
 	healthErr  error
 }
 
-func (s *ycqlStub) Start(_ context.Context, _ ycql.Config) error {
+func (s *cqlStub) Start(_ context.Context, _ cql.Config) error {
 	s.startCalls++
 	return nil
 }
 
-func (s *ycqlStub) Stop(_ context.Context) error {
+func (s *cqlStub) Stop(_ context.Context) error {
 	s.stopCalls++
 	return nil
 }
 
-func (s *ycqlStub) Health(_ context.Context) error {
+func (s *cqlStub) Health(_ context.Context) error {
 	return s.healthErr
 }
 
-func (s *ycqlStub) Route(_ context.Context, _ ycql.Request) (ycql.Response, error) {
+func (s *cqlStub) Route(_ context.Context, _ cql.Request) (cql.Response, error) {
 	if s.healthErr != nil {
-		return ycql.Response{}, s.healthErr
+		return cql.Response{}, s.healthErr
 	}
-	return ycql.Response{Applied: true}, nil
+	return cql.Response{Applied: true}, nil
 }
 
-func (s *ycqlStub) RouteBatch(_ context.Context, _ ycql.BatchRequest) (ycql.Response, error) {
+func (s *cqlStub) RouteBatch(_ context.Context, _ cql.BatchRequest) (cql.Response, error) {
 	if s.healthErr != nil {
-		return ycql.Response{}, s.healthErr
+		return cql.Response{}, s.healthErr
 	}
-	return ycql.Response{Applied: true}, nil
+	return cql.Response{Applied: true}, nil
 }
 
 func makeRuntimeForTest(t *testing.T, cfg Config) *Runtime {
@@ -85,38 +85,38 @@ func TestRuntimeStartsAndStopsQueryCoordinators(t *testing.T) {
 	cfg.NodeID = "tserver-test"
 	r := makeRuntimeForTest(t, cfg)
 
-	ysqlS := &ysqlStub{}
-	ycqlS := &ycqlStub{}
-	r.ysql = ysqlS
-	r.ycql = ycqlS
+	sqlS := &sqlStub{}
+	cqlS := &cqlStub{}
+	r.sqlCoord = sqlS
+	r.cqlServer = cqlS
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := r.Start(ctx); err != nil {
 		t.Fatalf("start runtime: %v", err)
 	}
-	if ysqlS.startCalls != 1 {
-		t.Fatalf("expected one ysql start call, got %d", ysqlS.startCalls)
+	if sqlS.startCalls != 1 {
+		t.Fatalf("expected one sql start call, got %d", sqlS.startCalls)
 	}
-	if ycqlS.startCalls != 1 {
-		t.Fatalf("expected one ycql start call, got %d", ycqlS.startCalls)
+	if cqlS.startCalls != 1 {
+		t.Fatalf("expected one cql start call, got %d", cqlS.startCalls)
 	}
 	if err := r.Stop(ctx); err != nil {
 		t.Fatalf("stop runtime: %v", err)
 	}
-	if ysqlS.stopCalls != 1 {
-		t.Fatalf("expected one ysql stop call, got %d", ysqlS.stopCalls)
+	if sqlS.stopCalls != 1 {
+		t.Fatalf("expected one sql stop call, got %d", sqlS.stopCalls)
 	}
-	if ycqlS.stopCalls != 1 {
-		t.Fatalf("expected one ycql stop call, got %d", ycqlS.stopCalls)
+	if cqlS.stopCalls != 1 {
+		t.Fatalf("expected one cql stop call, got %d", cqlS.stopCalls)
 	}
 }
 
-func TestLocalYSQLCoordinatorHealthRetryableWhenStopped(t *testing.T) {
-	c := ysql.NewLocalCoordinator()
+func TestLocalSQLCoordinatorHealthRetryableWhenStopped(t *testing.T) {
+	c := sql.NewLocalCoordinator()
 	err := c.Health(context.Background())
 	if err == nil {
-		t.Fatalf("expected health error when ysql is stopped")
+		t.Fatalf("expected health error when sql is stopped")
 	}
 	n := dberrors.NormalizeError(err)
 	if n.Code != dberrors.ErrRetryableUnavailable {
@@ -124,11 +124,11 @@ func TestLocalYSQLCoordinatorHealthRetryableWhenStopped(t *testing.T) {
 	}
 }
 
-func TestLocalYCQLServerHealthRetryableWhenStopped(t *testing.T) {
-	s := ycql.NewLocalServer()
+func TestLocalCQLServerHealthRetryableWhenStopped(t *testing.T) {
+	s := cql.NewLocalServer()
 	err := s.Health(context.Background())
 	if err == nil {
-		t.Fatalf("expected health error when ycql is stopped")
+		t.Fatalf("expected health error when cql is stopped")
 	}
 	n := dberrors.NormalizeError(err)
 	if n.Code != dberrors.ErrRetryableUnavailable {
@@ -142,8 +142,8 @@ func TestRuntimeYSQLControlAPIs(t *testing.T) {
 	cfg.EnableYSQL = true
 	r := makeRuntimeForTest(t, cfg)
 
-	stub := &ysqlStub{healthErr: dberrors.New(dberrors.ErrRetryableUnavailable, "ysql is not started", true, nil)}
-	r.ysql = stub
+	stub := &sqlStub{healthErr: dberrors.New(dberrors.ErrRetryableUnavailable, "sql is not started", true, nil)}
+	r.sqlCoord = stub
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()

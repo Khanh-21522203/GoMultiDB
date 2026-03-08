@@ -6,8 +6,8 @@ import (
 	"time"
 
 	dberrors "GoMultiDB/internal/common/errors"
-	"GoMultiDB/internal/query/ycql"
-	"GoMultiDB/internal/query/ysql"
+	"GoMultiDB/internal/query/cql"
+	"GoMultiDB/internal/query/sql"
 	rpcpkg "GoMultiDB/internal/rpc"
 )
 
@@ -49,17 +49,17 @@ func TestPhase5SmokeRuntimeQueryStatus(t *testing.T) {
 		t.Fatalf("expected ysql healthy")
 	}
 
-	y, ok := r.ycql.(*ycql.LocalServer)
+	c, ok := r.cqlServer.(*cql.LocalServer)
 	if !ok {
-		t.Fatalf("expected local ycql server type")
+		t.Fatalf("expected local cql server type")
 	}
-	if _, err := y.Route(ctx, ycql.Request{ConnID: "phase5-smoke-conn", Query: "SELECT now()"}); err != nil {
-		t.Fatalf("ycql route from runtime: %v", err)
+	if _, err := c.Route(ctx, cql.Request{ConnID: "phase5-smoke-conn", Query: "SELECT now()"}); err != nil {
+		t.Fatalf("cql route from runtime: %v", err)
 	}
 
-	ys := r.ysql.(*ysql.LocalCoordinator)
-	if err := ys.Stop(ctx); err != nil {
-		t.Fatalf("stop ysql coordinator: %v", err)
+	s := r.sqlCoord.(*sql.LocalCoordinator)
+	if err := s.Stop(ctx); err != nil {
+		t.Fatalf("stop sql coordinator: %v", err)
 	}
 
 	status, err = r.GetYSQLStatus(ctx)
@@ -70,7 +70,7 @@ func TestPhase5SmokeRuntimeQueryStatus(t *testing.T) {
 		t.Fatalf("expected ysql unhealthy after stop")
 	}
 
-	n := dberrors.NormalizeError(ys.Health(ctx))
+	n := dberrors.NormalizeError(s.Health(ctx))
 	if n.Code != dberrors.ErrRetryableUnavailable {
 		t.Fatalf("expected retryable unavailable health code after stop, got %s", n.Code)
 	}

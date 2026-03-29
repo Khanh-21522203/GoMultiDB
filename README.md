@@ -37,7 +37,7 @@ The project has implemented and validated:
 **Query Layer Scaffolding:**
 - SQL/CQL coordinators and dispatch foundations
 - PgGate bridge with executor framework
-- YSQL/YCQL server stubs with health status
+- SQL/CQL server stubs with health status
 
 **Observability:**
 - Metrics/health/admin handlers

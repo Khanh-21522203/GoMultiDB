@@ -11,10 +11,10 @@ import (
 	"GoMultiDB/internal/storage/rocks"
 )
 
-func TestPhase5FailoverRuntimeYSQLStatusTransition(t *testing.T) {
+func TestPhase5FailoverRuntimeSQLStatusTransition(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.NodeID = "phase5-failover"
-	cfg.EnableYSQL = true
+	cfg.EnableSQL = true
 
 	rpcServer, err := rpcpkg.NewServer(rpcpkg.Config{BindAddress: "127.0.0.1:0", StrictContractCheck: true})
 	if err != nil {
@@ -36,7 +36,7 @@ func TestPhase5FailoverRuntimeYSQLStatusTransition(t *testing.T) {
 		_ = r.Stop(context.Background())
 	}()
 
-	status, err := r.GetYSQLStatus(ctx)
+	status, err := r.GetSQLStatus(ctx)
 	if err != nil {
 		t.Fatalf("status before induced failover: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestPhase5FailoverRuntimeYSQLStatusTransition(t *testing.T) {
 		t.Fatalf("induce stop as failover simulation: %v", err)
 	}
 
-	status, err = r.GetYSQLStatus(ctx)
+	status, err = r.GetSQLStatus(ctx)
 	if err != nil {
 		t.Fatalf("status after induced failover: %v", err)
 	}

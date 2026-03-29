@@ -15,9 +15,9 @@ import (
 func TestPhase5SmokeRuntimeQueryStatus(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.NodeID = "phase5-smoke"
-	cfg.EnableYSQL = true
-	cfg.EnableYCQL = true
-	cfg.YCQLMaxConnections = 4
+	cfg.EnableSQL = true
+	cfg.EnableCQL = true
+	cfg.CQLMaxConnections = 4
 
 	rpcServer, err := rpcpkg.NewServer(rpcpkg.Config{BindAddress: "127.0.0.1:0", StrictContractCheck: true})
 	if err != nil {
@@ -40,15 +40,15 @@ func TestPhase5SmokeRuntimeQueryStatus(t *testing.T) {
 		_ = r.Stop(context.Background())
 	}()
 
-	status, err := r.GetYSQLStatus(ctx)
+	status, err := r.GetSQLStatus(ctx)
 	if err != nil {
-		t.Fatalf("get ysql status: %v", err)
+		t.Fatalf("get sql status: %v", err)
 	}
 	if !status.Enabled {
-		t.Fatalf("expected ysql enabled")
+		t.Fatalf("expected sql enabled")
 	}
 	if !status.Healthy {
-		t.Fatalf("expected ysql healthy")
+		t.Fatalf("expected sql healthy")
 	}
 
 	c, ok := r.cqlServer.(*cql.LocalServer)
@@ -64,12 +64,12 @@ func TestPhase5SmokeRuntimeQueryStatus(t *testing.T) {
 		t.Fatalf("stop sql coordinator: %v", err)
 	}
 
-	status, err = r.GetYSQLStatus(ctx)
+	status, err = r.GetSQLStatus(ctx)
 	if err != nil {
-		t.Fatalf("get ysql status after stop: %v", err)
+		t.Fatalf("get sql status after stop: %v", err)
 	}
 	if status.Healthy {
-		t.Fatalf("expected ysql unhealthy after stop")
+		t.Fatalf("expected sql unhealthy after stop")
 	}
 
 	n := dberrors.NormalizeError(s.Health(ctx))

@@ -32,10 +32,10 @@ type Runtime struct {
 	cqlServer cql.Server
 
 	// Snapshot coordinator for distributed snapshot management.
-	snapCoord     *snapshot.Coordinator
-	snapStore     snapshot.SnapshotStore
-	rocksStore    rocks.Store
-	tabletRPC     snapshot.TabletRPCRegistry
+	snapCoord  *snapshot.Coordinator
+	snapStore  snapshot.SnapshotStore
+	rocksStore rocks.Store
+	tabletRPC  snapshot.TabletRPCRegistry
 
 	mu            sync.Mutex
 	started       bool
@@ -43,7 +43,7 @@ type Runtime struct {
 	shutdownPhase atomic.Int32
 }
 
-type YSQLStatus struct {
+type SQLStatus struct {
 	Enabled bool
 	Healthy bool
 }
@@ -66,13 +66,13 @@ func NewRuntimeWithTabletRPC(cfg Config, rpcServer *rpcpkg.Server, rocksStore ro
 	}
 
 	r := &Runtime{
-		cfg:       cfg,
-		rpcServer: rpcServer,
-		clock:     systemClock{},
-		sqlCoord:  sql.NewLocalCoordinator(),
-		cqlServer: cql.NewLocalServer(),
+		cfg:        cfg,
+		rpcServer:  rpcServer,
+		clock:      systemClock{},
+		sqlCoord:   sql.NewLocalCoordinator(),
+		cqlServer:  cql.NewLocalServer(),
 		rocksStore: rocksStore,
-		tabletRPC: tabletRPC,
+		tabletRPC:  tabletRPC,
 	}
 
 	// Initialize snapshot coordinator if enabled.
@@ -118,9 +118,9 @@ func (r *Runtime) Start(ctx context.Context) error {
 	}
 	if r.sqlCoord != nil {
 		if err := r.sqlCoord.Start(ctx, sql.ProcessConfig{
-			Enabled:        r.cfg.EnableYSQL,
-			BindAddress:    r.cfg.YSQLBindAddress,
-			MaxConnections: r.cfg.YSQLMaxConnections,
+			Enabled:        r.cfg.EnableSQL,
+			BindAddress:    r.cfg.SQLBindAddress,
+			MaxConnections: r.cfg.SQLMaxConnections,
 		}); err != nil {
 			_ = r.rpcServer.Stop(context.Background())
 			return err
@@ -128,9 +128,9 @@ func (r *Runtime) Start(ctx context.Context) error {
 	}
 	if r.cqlServer != nil {
 		if err := r.cqlServer.Start(ctx, cql.Config{
-			Enabled:        r.cfg.EnableYCQL,
-			BindAddress:    r.cfg.YCQLBindAddress,
-			MaxConnections: r.cfg.YCQLMaxConnections,
+			Enabled:        r.cfg.EnableCQL,
+			BindAddress:    r.cfg.CQLBindAddress,
+			MaxConnections: r.cfg.CQLMaxConnections,
 		}); err != nil {
 			if r.sqlCoord != nil {
 				_ = r.sqlCoord.Stop(context.Background())
@@ -157,7 +157,7 @@ func (r *Runtime) Stop(ctx context.Context) error {
 		return nil
 	}
 
-	// Phase 1 — stop query coordinators (YCQL then YSQL).
+	// Phase 1 — stop query coordinators (CQL then SQL).
 	r.shutdownPhase.Store(1)
 	slog.Info("shutdown: phase 1 — stopping query coordinators")
 	if r.cqlServer != nil {
@@ -182,7 +182,7 @@ func (r *Runtime) Stop(ctx context.Context) error {
 	return nil
 }
 
-func (r *Runtime) StartYSQL(ctx context.Context) error {
+func (r *Runtime) StartSQL(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -192,13 +192,13 @@ func (r *Runtime) StartYSQL(ctx context.Context) error {
 		return nil
 	}
 	return r.sqlCoord.Start(ctx, sql.ProcessConfig{
-		Enabled:        r.cfg.EnableYSQL,
-		BindAddress:    r.cfg.YSQLBindAddress,
-		MaxConnections: r.cfg.YSQLMaxConnections,
+		Enabled:        r.cfg.EnableSQL,
+		BindAddress:    r.cfg.SQLBindAddress,
+		MaxConnections: r.cfg.SQLMaxConnections,
 	})
 }
 
-func (r *Runtime) StopYSQL(ctx context.Context) error {
+func (r *Runtime) StopSQL(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -210,16 +210,16 @@ func (r *Runtime) StopYSQL(ctx context.Context) error {
 	return r.sqlCoord.Stop(ctx)
 }
 
-func (r *Runtime) GetYSQLStatus(ctx context.Context) (YSQLStatus, error) {
+func (r *Runtime) GetSQLStatus(ctx context.Context) (SQLStatus, error) {
 	select {
 	case <-ctx.Done():
-		return YSQLStatus{}, ctx.Err()
+		return SQLStatus{}, ctx.Err()
 	default:
 	}
 	if r.sqlCoord == nil {
-		return YSQLStatus{Enabled: false, Healthy: false}, nil
+		return SQLStatus{Enabled: false, Healthy: false}, nil
 	}
-	status := YSQLStatus{Enabled: r.cfg.EnableYSQL}
+	status := SQLStatus{Enabled: r.cfg.EnableSQL}
 	if err := r.sqlCoord.Health(ctx); err != nil {
 		return status, nil
 	}

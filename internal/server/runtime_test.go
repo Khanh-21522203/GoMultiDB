@@ -158,10 +158,10 @@ func TestRuntimeShutdownPhaseReachesZero(t *testing.T) {
 	}
 }
 
-func TestRuntimeYSQLControlAPIs(t *testing.T) {
+func TestRuntimeSQLControlAPIs(t *testing.T) {
 	cfg := DefaultConfig()
-	cfg.NodeID = "tserver-ysql-control"
-	cfg.EnableYSQL = true
+	cfg.NodeID = "tserver-sql-control"
+	cfg.EnableSQL = true
 	r := makeRuntimeForTest(t, cfg)
 
 	stub := &sqlStub{healthErr: dberrors.New(dberrors.ErrRetryableUnavailable, "sql is not started", true, nil)}
@@ -170,37 +170,37 @@ func TestRuntimeYSQLControlAPIs(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	status, err := r.GetYSQLStatus(ctx)
+	status, err := r.GetSQLStatus(ctx)
 	if err != nil {
-		t.Fatalf("get ysql status before start: %v", err)
+		t.Fatalf("get sql status before start: %v", err)
 	}
 	if !status.Enabled {
-		t.Fatalf("expected ysql enabled in status")
+		t.Fatalf("expected sql enabled in status")
 	}
 	if status.Healthy {
-		t.Fatalf("expected ysql unhealthy before start")
+		t.Fatalf("expected sql unhealthy before start")
 	}
 
-	if err := r.StartYSQL(ctx); err != nil {
-		t.Fatalf("start ysql: %v", err)
+	if err := r.StartSQL(ctx); err != nil {
+		t.Fatalf("start sql: %v", err)
 	}
 	if stub.startCalls != 1 {
 		t.Fatalf("expected one start call, got %d", stub.startCalls)
 	}
 
-	status, err = r.GetYSQLStatus(ctx)
+	status, err = r.GetSQLStatus(ctx)
 	if err != nil {
-		t.Fatalf("get ysql status after start: %v", err)
+		t.Fatalf("get sql status after start: %v", err)
 	}
 	if !status.Enabled {
-		t.Fatalf("expected ysql enabled in status after start")
+		t.Fatalf("expected sql enabled in status after start")
 	}
 	if !status.Healthy {
-		t.Fatalf("expected ysql healthy after start")
+		t.Fatalf("expected sql healthy after start")
 	}
 
-	if err := r.StopYSQL(ctx); err != nil {
-		t.Fatalf("stop ysql: %v", err)
+	if err := r.StopSQL(ctx); err != nil {
+		t.Fatalf("stop sql: %v", err)
 	}
 	if stub.stopCalls != 1 {
 		t.Fatalf("expected one stop call, got %d", stub.stopCalls)

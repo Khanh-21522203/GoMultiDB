@@ -26,12 +26,12 @@ type Config struct {
 	MaxClockSkew         time.Duration
 	TLS                  TLSConfig
 	StrictContractCheck  bool
-	EnableYSQL           bool
-	YSQLBindAddress      string
-	YSQLMaxConnections   int
-	EnableYCQL           bool
-	YCQLBindAddress      string
-	YCQLMaxConnections   int
+	EnableSQL            bool
+	SQLBindAddress       string
+	SQLMaxConnections    int
+	EnableCQL            bool
+	CQLBindAddress       string
+	CQLMaxConnections    int
 	EnableSnapshotCoord  bool
 	MaxConcurrentSnaps   int
 }
@@ -103,12 +103,12 @@ func DefaultConfig() Config {
 		HTTPBindAddress:     "0.0.0.0:9000",
 		MaxClockSkew:        500 * time.Millisecond,
 		StrictContractCheck: true,
-		EnableYSQL:          false,
-		YSQLBindAddress:     "127.0.0.1:5433",
-		YSQLMaxConnections:  300,
-		EnableYCQL:          true,
-		YCQLBindAddress:     "127.0.0.1:9042",
-		YCQLMaxConnections:  1000,
+		EnableSQL:           false,
+		SQLBindAddress:      "127.0.0.1:5433",
+		SQLMaxConnections:   300,
+		EnableCQL:           true,
+		CQLBindAddress:      "127.0.0.1:9042",
+		CQLMaxConnections:   1000,
 		EnableSnapshotCoord: true,
 		MaxConcurrentSnaps:  2,
 	}

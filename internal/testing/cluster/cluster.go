@@ -18,8 +18,8 @@ type TestClusterSpec struct {
 	NumMasters        int
 	NumTServers       int
 	ReplicationFactor int
-	EnableYSQL        bool
-	EnableYCQL        bool
+	EnableSQL         bool
+	EnableCQL         bool
 	// MemoryLimitBytes per node; defaults to 512 MiB.
 	MemoryLimitBytes int64
 }
@@ -144,8 +144,8 @@ func StartTestCluster(ctx context.Context, spec TestClusterSpec) (*ClusterHandle
 		cfg.RPCBindAddress = "127.0.0.1:0"
 		cfg.DataDirs = []string{tempDir}
 		cfg.MemoryHardLimitBytes = spec.MemoryLimitBytes
-		cfg.EnableYSQL = spec.EnableYSQL
-		cfg.EnableYCQL = spec.EnableYCQL
+		cfg.EnableSQL = spec.EnableSQL
+		cfg.EnableCQL = spec.EnableCQL
 
 		rocksStore := rocks.NewMemoryStore()
 		rt, err := server.NewRuntime(cfg, rpcSrv, rocksStore)

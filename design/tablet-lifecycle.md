@@ -88,3 +88,5 @@ FAILED/TOMBSTONED --remote bootstrap--> RUNNING
 
 Changes:
 
+- Rework tablet split/move/recovery workflows for post-Raft ownership and failover semantics.
+- Define explicit ownership-transfer behavior for tablet lifecycle operations without Raft consensus.

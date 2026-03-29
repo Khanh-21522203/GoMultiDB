@@ -92,3 +92,5 @@ master/tserver main
 
 Changes:
 
+- Remove Raft-specific startup/dependency wiring from runtime bootstrap and replace with a simplified leader-cluster bootstrap model.
+- Update runtime query and control-plane startup order to match the post-Raft architecture boundaries.

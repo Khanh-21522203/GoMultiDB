@@ -24,7 +24,7 @@ Coordinates distributed snapshot create/delete/restore operations across tablets
 2. `Coordinator.CreateSnapshot`:
    - creates `SnapshotInfo` in `StateCreating`
    - persists via `SnapshotStore.SaveSnapshot`
-   - fan-outs `CreateTabletSnapshot` calls via bounded semaphore.
+   - fan-outs `CreateTabletSnapshot` calls via bounded semaphore after primary-owner endpoint lookup through `RegistryClient`.
 3. Success transitions to `StateComplete`; failures set `StateFailed` and `Error`.
 4. `DeleteSnapshot` transitions complete snapshot to deleting, fan-outs delete RPCs, and removes descriptor on success.
 5. `Recover` loads persisted snapshots and resumes in-progress states (`CREATING`, `RESTORING`, `DELETING`).
@@ -60,6 +60,7 @@ Coordinates distributed snapshot create/delete/restore operations across tablets
 - Empty snapshot ID or empty tablet list -> `ErrInvalidArgument`.
 - Duplicate snapshot ID -> `ErrConflict`.
 - Delete/restore on non-`COMPLETE` states -> `ErrConflict`.
+- Registry endpoint lookup can fail with `ErrPrimaryOwnerChanged` when primary ownership metadata is stale; caller should refresh and retry.
 - Fan-out failures mark snapshot `FAILED` for create/restore; delete leaves state for retry.
 - Recovery attempts best-effort resume for in-progress snapshots.
 
@@ -73,7 +74,6 @@ Coordinates distributed snapshot create/delete/restore operations across tablets
 
 ### Risks and Notes
 - Fan-out returns first observed error; partial tablet success is possible and represented via failed snapshot state.
-- Registry endpoint selection depends on master registry behavior and may not target true raft leaders.
+- Registry endpoint selection now targets heartbeat-derived primary ownership; primary transitions require metadata freshness for low retry latency.
 
 Changes:
-

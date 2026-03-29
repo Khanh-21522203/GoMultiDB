@@ -97,3 +97,5 @@ Owns CDC stream event storage, checkpoint progression, stream service APIs, rete
 
 Changes:
 
+- Decide and document whether CDC remains enabled as an optional async replication/changefeed path after Raft removal.
+- If retained, define source ordering and checkpoint guarantees under post-Raft primary ownership semantics.

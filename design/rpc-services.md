@@ -43,6 +43,7 @@ Provides the in-cluster HTTP JSON-RPC transport (`/rpc`) and the baseline `ping.
 - `Client.Call(ctx, envelope, service, method, payload)`:
   - Returns retryable unavailable on transport errors.
   - Returns typed DB error when server sets `rpcResponse.Error`.
+  - Routing callers must treat `ErrNotPrimary` and `ErrPrimaryOwnerChanged` as retryable refresh signals.
 - Ping service method:
   - `service=ping`, `method=echo`.
   - Empty message is normalized to `"pong"`.
@@ -61,6 +62,9 @@ Provides the in-cluster HTTP JSON-RPC transport (`/rpc`) and the baseline `ping.
 - Version mismatch under strict mode returns `ErrInvalidArgument`.
 - Unknown service or method returns `ErrInvalidArgument`.
 - Client transport failure maps to `ErrRetryableUnavailable`.
+- Primary-routing failures from upstream services surface as:
+  - `ErrNotPrimary` when request hit a non-primary control endpoint.
+  - `ErrPrimaryOwnerChanged` when tablet endpoint ownership metadata is stale and must be refreshed.
 - Ping payload unmarshal failures return `ErrInvalidArgument`; response marshal failures return `ErrInternal`.
 
 ### Observability and Debugging
@@ -73,6 +77,6 @@ Provides the in-cluster HTTP JSON-RPC transport (`/rpc`) and the baseline `ping.
 ### Risks and Notes
 - Transport contract is single endpoint (`/rpc`) and JSON-encoded payload bytes; no per-method HTTP path separation.
 - No built-in request metrics in `internal/rpc`; observability currently comes from higher-level components/tests.
+- Endpoint refresh behavior is contract-driven (error-code based), not transport-driven; callers must implement retry + refresh loops.
 
 Changes:
-

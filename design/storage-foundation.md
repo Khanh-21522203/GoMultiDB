@@ -14,7 +14,7 @@ Provides the low-level persistence substrate: a Rocks-like KV abstraction (`Regu
 
 ### Primary User Flow
 1. Caller writes non-transactional DocDB mutations or transactional intents.
-2. WAL persists ordered replication entries.
+2. WAL persists ordered local operation entries for node-level durability and recovery replay.
 3. Commit path applies intents to regular versioned keys; abort path removes intents.
 4. Readers use `ReadAt` hybrid-time visibility rules.
 
@@ -52,8 +52,10 @@ Provides the low-level persistence substrate: a Rocks-like KV abstraction (`Regu
   - `AppendSync(ctx, entries)` waits for append callback.
   - `ReadFrom(from,max)` returns in-memory recovered/append order sequence.
   - `IndexLookup(opID)` resolves segment and offset.
+  - WAL durability/ordering is local to the node and is not coupled to quorum commit in current architecture.
 - DocDB contracts:
   - `ApplyIntents`/`RemoveIntents` support bounded batch (`limit`) and return `(done, err)`.
+  - Write visibility is local-engine scoped; cross-node convergence/replication guarantees are defined outside this module.
 
 ### Dependencies
 **Internal modules:**
@@ -83,6 +85,6 @@ Provides the low-level persistence substrate: a Rocks-like KV abstraction (`Regu
 ### Risks and Notes
 - `rocks.MemoryStore` is an in-memory implementation; production durable RocksDB wiring is not present in this repo.
 - WAL indexes and entry cache are process-memory structures rebuilt at restart from segment replay.
+- Without Raft, storage guarantees are local durability and deterministic replay only; ownership transfer/failover semantics live in master/query layers.
 
 Changes:
-

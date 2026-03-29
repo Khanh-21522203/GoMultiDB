@@ -77,3 +77,5 @@ Provides reusable in-process testing harnesses plus integration/stress suites th
 
 Changes:
 
+- Replace Raft/replica-centric invariants with post-Raft ownership, routing, and durability invariants.
+- Add regression scenarios for primary ownership transfer/restart behavior in the simplified leader-cluster model.

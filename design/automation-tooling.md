@@ -70,3 +70,5 @@ Provides script-driven operational workflows for compose lifecycle, test tiers, 
 
 Changes:
 
+- Update compose/test/stress scripts to remove Raft-specific orchestration and align with the simplified leader-cluster topology.
+- Remove or rewrite CI/automation checks that assume Raft-era replica/leader behavior.

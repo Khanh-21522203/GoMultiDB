@@ -140,6 +140,21 @@ func TestRegistryClient_TabletNotFound(t *testing.T) {
 	}
 }
 
+func TestRegistryClient_PropagatesPrimaryOwnerChanged(t *testing.T) {
+	registry := &mockRegistryErr{
+		err: dberrors.New(dberrors.ErrPrimaryOwnerChanged, "refresh endpoint metadata", true, nil),
+	}
+	client := NewRegistryClient(registry)
+	err := client.CreateTabletSnapshot(context.Background(), "snap1", "tablet1")
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	n := dberrors.NormalizeError(err)
+	if n.Code != dberrors.ErrPrimaryOwnerChanged {
+		t.Fatalf("expected ErrPrimaryOwnerChanged, got %s", n.Code)
+	}
+}
+
 // mock registry for testing
 
 type mockRegistry struct {
@@ -152,4 +167,12 @@ func (m *mockRegistry) GetEndpoint(tabletID string) (string, error) {
 		return "", dberrors.New(dberrors.ErrInvalidArgument, "tablet not found", false, nil)
 	}
 	return ep, nil
+}
+
+type mockRegistryErr struct {
+	err error
+}
+
+func (m *mockRegistryErr) GetEndpoint(string) (string, error) {
+	return "", m.err
 }

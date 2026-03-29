@@ -68,3 +68,5 @@ Applies CDC events to target cluster semantics with retry/backoff, deduplication
 
 Changes:
 
+- Keep xCluster explicitly optional and independent from local Raft HA assumptions in the simplified architecture.
+- Revalidate dedupe/checkpoint behavior for ownership changes when the source no longer relies on Raft leader semantics.

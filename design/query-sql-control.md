@@ -77,3 +77,5 @@ Provides SQL process lifecycle abstractions: a lightweight local coordinator use
 
 Changes:
 
+- Finish SQL surface so runtime uses a complete SQL path rather than coordinator-only scaffolding.
+- Complete integration for real process and execution flow, including production-ready startup, health, and query-serving behavior.

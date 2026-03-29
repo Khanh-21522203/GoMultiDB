@@ -78,3 +78,5 @@ Maintains stream/job administrative state and runs scheduler ticks that poll CDC
 
 Changes:
 
+- Keep scheduler/registry only if async CDC/xCluster replication remains in scope; otherwise decommission these control-plane paths.
+- Update scheduling inputs to track post-Raft primary ownership and failover signals.

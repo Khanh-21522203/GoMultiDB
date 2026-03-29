@@ -245,7 +245,7 @@ func (m *Manager) CreateTable(ctx context.Context, req CreateTableRequest) (ids.
 	defer m.mu.Unlock()
 
 	if !m.isLeader {
-		return "", dberrors.New(dberrors.ErrNotLeader, "catalog mutation requires leader", true, nil)
+		return "", dberrors.New(dberrors.ErrNotPrimary, "catalog mutation requires primary", true, nil)
 	}
 	if seen, ok := m.dedupe[req.RequestID]; ok {
 		if seen.kind != "create_table" || seen.fingerprint != fingerprint {
@@ -342,7 +342,7 @@ func (m *Manager) AlterTable(ctx context.Context, req AlterTableRequest) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if !m.isLeader {
-		return dberrors.New(dberrors.ErrNotLeader, "catalog mutation requires leader", true, nil)
+		return dberrors.New(dberrors.ErrNotPrimary, "catalog mutation requires primary", true, nil)
 	}
 	if seen, ok := m.dedupe[req.RequestID]; ok {
 		if seen.kind != "alter_table" || seen.value != string(req.TableID) {
@@ -403,7 +403,7 @@ func (m *Manager) DeleteTable(ctx context.Context, req DeleteTableRequest) error
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if !m.isLeader {
-		return dberrors.New(dberrors.ErrNotLeader, "catalog mutation requires leader", true, nil)
+		return dberrors.New(dberrors.ErrNotPrimary, "catalog mutation requires primary", true, nil)
 	}
 	if seen, ok := m.dedupe[req.RequestID]; ok {
 		if seen.kind != "delete_table" || seen.value != string(req.TableID) {
@@ -467,7 +467,7 @@ func (m *Manager) CreateTablet(ctx context.Context, ti TabletInfo, reqID ids.Req
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if !m.isLeader {
-		return "", dberrors.New(dberrors.ErrNotLeader, "catalog mutation requires leader", true, nil)
+		return "", dberrors.New(dberrors.ErrNotPrimary, "catalog mutation requires primary", true, nil)
 	}
 	if seen, ok := m.dedupe[reqID]; ok {
 		if seen.kind != "create_tablet" {
@@ -535,7 +535,7 @@ func (m *Manager) ProcessTabletReport(ctx context.Context, report TabletReport) 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if !m.isLeader {
-		return dberrors.New(dberrors.ErrNotLeader, "tablet report requires leader", true, nil)
+		return dberrors.New(dberrors.ErrNotPrimary, "tablet report requires primary", true, nil)
 	}
 	m.initSeqTracker()
 
@@ -578,7 +578,7 @@ func (m *Manager) ApplyTabletReport(ctx context.Context, delta TabletReportDelta
 	m.mu.RUnlock()
 
 	if !isLeader {
-		return dberrors.New(dberrors.ErrNotLeader, "tablet report reconciliation requires leader", true, nil)
+		return dberrors.New(dberrors.ErrNotPrimary, "tablet report reconciliation requires primary", true, nil)
 	}
 	return sink.ApplyTabletReport(ctx, delta)
 }

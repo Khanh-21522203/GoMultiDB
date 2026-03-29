@@ -4,7 +4,7 @@ A pragmatic distributed database prototype in Go.
 
 This repository focuses on **incremental, test-backed system construction** across:
 - server lifecycle and RPC foundations,
-- storage/consensus/query scaffolding,
+- storage/query scaffolding,
 - master catalog, heartbeat, and snapshotting,
 - CDC + xCluster replication workflows,
 - control-plane operations,
@@ -62,7 +62,7 @@ Primary runtime roles:
 Primary internal domains:
 - `internal/rpc` — transport/contracts
 - `internal/server` — runtime/lifecycle/config
-- `internal/raft`, `internal/wal`, `internal/docdb`, `internal/storage/rocks`
+- `internal/wal`, `internal/docdb`, `internal/storage/rocks`
 - `internal/query/{sql,cql,pggate}` — query layer foundations
 - `internal/replication/{cdc,xcluster,controlplane,observability}` — replication stack
 - `internal/master/{catalog,heartbeat,snapshot,balancer,syscatalog,registry}` — master control plane
@@ -88,9 +88,9 @@ Primary internal domains:
            |                          |                         |
            v                          v                         v
 +----------+----------+    +----------+-----------+   +--------+----------------+
-| control-plane       |    | observability        |   | storage/consensus layer |
-| stream/job registry |    | metrics/health/admin |   | raft + wal + docdb      |
-| scheduler           |    | handlers             |   | rocks                   |
+| control-plane       |    | observability        |   | storage foundation      |
+| stream/job registry |    | metrics/health/admin |   | wal + docdb + rocks     |
+| scheduler           |    | handlers             |   |                         |
 +----------+----------+    +----------------------+   +--------+----------------+
            |
            v

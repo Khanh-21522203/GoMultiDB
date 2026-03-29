@@ -11,12 +11,12 @@ import (
 	"GoMultiDB/internal/master/catalog"
 	"GoMultiDB/internal/master/heartbeat"
 	"GoMultiDB/internal/master/registry"
+	"GoMultiDB/internal/master/snapshot"
 	"GoMultiDB/internal/master/syscatalog"
 	rpcpkg "GoMultiDB/internal/rpc"
 	"GoMultiDB/internal/server"
 	"GoMultiDB/internal/services/ping"
 	"GoMultiDB/internal/storage/rocks"
-	"GoMultiDB/internal/master/snapshot"
 )
 
 func main() {
@@ -122,7 +122,7 @@ func (a *tsManagerAdapter) Get(uuid string) (registry.TSDescriptor, bool) {
 	return registry.TSDescriptor{
 		Instance: registry.TSInstance{
 			PermanentUUID: desc.Instance.PermanentUUID,
-			InstanceSeqNo:  desc.Instance.InstanceSeqNo,
+			InstanceSeqNo: desc.Instance.InstanceSeqNo,
 		},
 		Registration: registry.TSRegistration{
 			RPCAddress:  desc.Registration.RPCAddress,
@@ -150,9 +150,10 @@ func (a *reconcileSinkAdapter) GetTablet(tabletID string) (registry.TabletPlacem
 		}
 	}
 	return registry.TabletPlacementView{
-		TabletID:    view.TabletID,
-		Replicas:    replicas,
-		Tombstoned:  view.Tombstoned,
-		LastUpdated: view.LastUpdated,
+		TabletID:      view.TabletID,
+		Replicas:      replicas,
+		PrimaryTSUUID: view.PrimaryTSUUID,
+		Tombstoned:    view.Tombstoned,
+		LastUpdated:   view.LastUpdated,
 	}, true
 }

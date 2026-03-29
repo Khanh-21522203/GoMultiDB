@@ -74,3 +74,5 @@ Provides metrics and health registry APIs plus HTTP admin endpoints (`/metrics`,
 
 Changes:
 
+- Update observability outputs to reflect post-Raft primary ownership transitions instead of Raft-oriented leader assumptions.
+- Remove or adapt replication admin/metric surfaces that become obsolete if CDC/xCluster scope is reduced.

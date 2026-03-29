@@ -11,7 +11,7 @@ GoMultiDB is a Go-based distributed database prototype with two process roles (`
 │ Uses:  Query Layer, Master Control Plane, Tablet Services              │
 └────────────────────────────────────────────────────────────────────────┘
 ┌─ Query Layer ───────────────────────────────────────────────────────────┐
-│ Owns: CQL protocol listener, SQL coordinator, PgGate session bridge   │
+│ Owns: CQL protocol listener, SQL coordinator, PgGate session bridge     │
 │ Entry: internal/query/cql/listener.go, internal/query/sql/coordinator.go│
 │ Key:   internal/query/cql, internal/query/sql, internal/query/pggate    │
 │ Uses:  Shared And Platform, Transactions                                │
@@ -19,32 +19,32 @@ GoMultiDB is a Go-based distributed database prototype with two process roles (`
 ┌─ Master Control Plane ──────────────────────────────────────────────────┐
 │ Owns: catalog state, heartbeats, snapshot coordination, balancing       │
 │ Entry: internal/master/heartbeat/service.go                             │
-│ Key:   internal/master/catalog, internal/master/snapshot, balancer      │
-│ Uses:  Tablet Services, Storage And Consensus                           │
+│ Key:   internal/master/catalog, internal/master/heartbeat, internal/master/snapshot │
+│ Uses:  Tablet Services, Storage Foundation                              │
 └─────────────────────────────────────────────────────────────────────────┘
 ┌─ Tablet Services ───────────────────────────────────────────────────────┐
 │ Owns: tablet lifecycle transitions, partition splits, remote bootstrap  │
 │ Entry: internal/tablet/manager.go                                       │
 │ Key:   internal/tablet/*, internal/partition/map.go                     │
-│ Uses:  Storage And Consensus, Master Control Plane                      │
+│ Uses:  Storage Foundation, Master Control Plane                         │
 └─────────────────────────────────────────────────────────────────────────┘
 ┌─ Replication ───────────────────────────────────────────────────────────┐
 │ Owns: CDC stream store/service, xCluster apply, control-plane scheduler │
 │ Entry: internal/replication/cdc/service.go                              │
 │ Key:   internal/replication/cdc, xcluster, controlplane, observability  │
-│ Uses:  Storage And Consensus, Shared And Platform                       │
+│ Uses:  Storage Foundation, Shared And Platform                          │
 └─────────────────────────────────────────────────────────────────────────┘
-┌─ Storage And Consensus ───────────────────────────────────────────────────┐
-│ Owns: WAL, in-memory Rocks KV facade, DocDB MVCC, Raft state machine      │
-│ Entry: internal/raft/consensus.go                                         │
-│ Key:   internal/wal, internal/storage/rocks, internal/docdb, internal/raft│
+┌─ Storage Foundation ──────────────────────────────────────────────────────┐
+│ Owns: WAL, in-memory Rocks KV facade, DocDB MVCC/intents                 │
+│ Entry: internal/wal/log.go, internal/docdb/engine.go                     │
+│ Key:   internal/wal, internal/storage/rocks, internal/docdb              │
 │ Uses:  Transactions, Shared And Platform                                  │
 └───────────────────────────────────────────────────────────────────────────┘
 ┌─ Transactions ──────────────────────────────────────────────────────────┐
 │ Owns: txn state machine, conflict resolution, wait queues, deadlocks    │
 │ Entry: internal/txn/manager.go                                          │
 │ Key:   internal/txn/manager.go, conflict, waitq                         │
-│ Uses:  Storage And Consensus                                            │
+│ Uses:  Storage Foundation                                               │
 └─────────────────────────────────────────────────────────────────────────┘
 ┌─ Shared And Platform ───────────────────────────────────────────────────┐
 │ Owns: error/ID/version contracts, idempotency TTL store, FS/mem guards  │
@@ -66,8 +66,8 @@ GoMultiDB is a Go-based distributed database prototype with two process roles (`
 | CQL Gateway | CQL protocol framing, listener, session/prepared statement handling | [query-cql-gateway.md](query-cql-gateway.md) | In Progress |
 | SQL Control | Local SQL coordinator and external postgres process manager | [query-sql-control.md](query-sql-control.md) | In Progress |
 | PgGate | PgGate session, transaction metadata, read/write dispatch bridge | [query-pggate.md](query-pggate.md) | In Progress |
-| Master Catalog Heartbeat | Table/tablet catalog mutations and tserver heartbeat reconciliation | [master-catalog-heartbeat.md](master-catalog-heartbeat.md) | Stable |
-| Master Snapshot Coordinator | Distributed snapshot coordinator + master snapshot RPC/service store | [master-snapshot-coordinator.md](master-snapshot-coordinator.md) | Stable |
+| Master Catalog Heartbeat | Table/tablet catalog mutations, heartbeat reconciliation, and syscatalog persistence | [master-catalog-heartbeat.md](master-catalog-heartbeat.md) | Stable |
+| Master Snapshot Coordinator | Distributed snapshot coordinator and master snapshot RPC/service/store paths | [master-snapshot-coordinator.md](master-snapshot-coordinator.md) | Stable |
 | Master Balancer | Replica/leader placement planner and cooldown logic | [master-balancer.md](master-balancer.md) | Stable |
 | Tablet Lifecycle | Tablet state machine, metadata durability, split orchestration, partition map | [tablet-lifecycle.md](tablet-lifecycle.md) | Stable |
 | Tablet Snapshot Bootstrap | Tablet-level snapshot copy/restore and remote bootstrap transfer sessions | [tablet-snapshot-bootstrap.md](tablet-snapshot-bootstrap.md) | Stable |
@@ -75,7 +75,6 @@ GoMultiDB is a Go-based distributed database prototype with two process roles (`
 | xCluster Apply | Event apply loop with retries, dedupe, and checkpoint advancement | [replication-xcluster.md](replication-xcluster.md) | Stable |
 | Replication Control Plane | Stream/job registry snapshots and scheduler ticks/in-flight caps | [replication-controlplane.md](replication-controlplane.md) | Stable |
 | Replication Observability | Metrics registry, health endpoints, drain and admin handlers | [replication-observability.md](replication-observability.md) | Stable |
-| Raft Consensus | Raft role transitions, append/vote handlers, membership changes | [raft-consensus.md](raft-consensus.md) | Stable |
 | Transaction Coordinator | Transaction record lifecycle, conflict policy, wait queue deadlock abort | [txn-coordinator.md](txn-coordinator.md) | Stable |
 | Storage Foundation | DocDB MVCC/intents on top of Rocks memory KV and WAL segments | [storage-foundation.md](storage-foundation.md) | Stable |
 | Shared Platform | Shared error/ID/type/version contracts and platform FS/memory guards | [shared-platform.md](shared-platform.md) | Stable |
@@ -93,4 +92,4 @@ GoMultiDB is a Go-based distributed database prototype with two process roles (`
 
 ## Notes
 
-None.
+- Removed feature doc `raft-consensus.md` during re-create sync because `internal/raft` no longer exists in current code.

@@ -91,3 +91,5 @@ TCP Conn
 
 Changes:
 
+- Finish CQL gateway implementation from scaffold level to complete request execution behavior.
+- Replace stub-style routing responses with real query path integration and complete protocol handling coverage.

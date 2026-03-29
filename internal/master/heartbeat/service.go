@@ -134,7 +134,7 @@ func (s *Service) TSHeartbeat(ctx context.Context, req HeartbeatRequest) (Heartb
 	s.mu.RUnlock()
 
 	if !isLeader {
-		return HeartbeatResponse{}, dberrors.New(dberrors.ErrNotLeader, "heartbeat requires master leader", true, nil)
+		return HeartbeatResponse{}, dberrors.New(dberrors.ErrNotPrimary, "heartbeat requires master primary", true, nil)
 	}
 	if req.Instance.PermanentUUID == "" {
 		return HeartbeatResponse{}, dberrors.New(dberrors.ErrInvalidArgument, "tserver permanent uuid is required", false, nil)
@@ -267,6 +267,7 @@ func (s *Service) buildActionsResponse(cat *catalog.Manager, planner *catalog.Di
 		}
 		filteredView := view
 		filteredView.Replicas = make(map[string]catalog.TabletReplicaStatus, len(view.Replicas))
+		filteredView.PrimaryTSUUID = view.PrimaryTSUUID
 		for tsID, rep := range view.Replicas {
 			if _, stale := staleSet[tsID]; stale {
 				continue
@@ -275,6 +276,11 @@ func (s *Service) buildActionsResponse(cat *catalog.Manager, planner *catalog.Di
 		}
 		if len(filteredView.Replicas) == 0 {
 			filteredView.Tombstoned = true
+			filteredView.PrimaryTSUUID = ""
+		} else if filteredView.PrimaryTSUUID == "" {
+			filteredView.PrimaryTSUUID = choosePrimaryReplica(filteredView.Replicas)
+		} else if _, ok := filteredView.Replicas[filteredView.PrimaryTSUUID]; !ok {
+			filteredView.PrimaryTSUUID = choosePrimaryReplica(filteredView.Replicas)
 		}
 		dirs := planner.PlanForTablet(filteredView)
 		for _, d := range dirs {
@@ -292,6 +298,18 @@ func (s *Service) buildActionsResponse(cat *catalog.Manager, planner *catalog.Di
 		actions = append(actions, actionByTablet[id])
 	}
 	return HeartbeatResponse{TabletActions: actions}, nil
+}
+
+func choosePrimaryReplica(replicas map[string]catalog.TabletReplicaStatus) string {
+	primary := ""
+	var maxSeq uint64
+	for tsUUID, rep := range replicas {
+		if primary == "" || rep.LastSeqNo > maxSeq || (rep.LastSeqNo == maxSeq && tsUUID < primary) {
+			primary = tsUUID
+			maxSeq = rep.LastSeqNo
+		}
+	}
+	return primary
 }
 
 // Name returns the service name for RPC registration.

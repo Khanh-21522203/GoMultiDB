@@ -4,13 +4,15 @@ package registry
 
 import (
 	"testing"
+
+	dberrors "GoMultiDB/internal/common/errors"
 )
 
 func TestTabletRPCRegistry_GetEndpoint(t *testing.T) {
 	tsManager := &mockTSManager{
 		descriptors: map[string]TSDescriptor{
 			"ts-1": {
-				Instance: TSInstance{PermanentUUID: "ts-1", InstanceSeqNo: 1},
+				Instance:     TSInstance{PermanentUUID: "ts-1", InstanceSeqNo: 1},
 				Registration: TSRegistration{RPCAddress: "ts-1.example.com:9100"},
 			},
 		},
@@ -22,7 +24,8 @@ func TestTabletRPCRegistry_GetEndpoint(t *testing.T) {
 				Replicas: map[string]TabletReplicaStatus{
 					"ts-1": {TSUUID: "ts-1", LastSeqNo: 100},
 				},
-				Tombstoned: false,
+				PrimaryTSUUID: "ts-1",
+				Tombstoned:    false,
 			},
 		},
 	}
@@ -90,15 +93,15 @@ func TestTabletRPCRegistry_NoAvailableReplicas(t *testing.T) {
 	}
 }
 
-func TestTabletRPCRegistry_SelectsAvailableReplica(t *testing.T) {
+func TestTabletRPCRegistry_SelectsPrimaryOwner(t *testing.T) {
 	tsManager := &mockTSManager{
 		descriptors: map[string]TSDescriptor{
 			"ts-1": {
-				Instance: TSInstance{PermanentUUID: "ts-1", InstanceSeqNo: 1},
+				Instance:     TSInstance{PermanentUUID: "ts-1", InstanceSeqNo: 1},
 				Registration: TSRegistration{RPCAddress: "ts-1.example.com:9100"},
 			},
 			"ts-2": {
-				Instance: TSInstance{PermanentUUID: "ts-2", InstanceSeqNo: 1},
+				Instance:     TSInstance{PermanentUUID: "ts-2", InstanceSeqNo: 1},
 				Registration: TSRegistration{RPCAddress: "ts-2.example.com:9100"},
 			},
 		},
@@ -109,9 +112,10 @@ func TestTabletRPCRegistry_SelectsAvailableReplica(t *testing.T) {
 				TabletID: "tablet-1",
 				Replicas: map[string]TabletReplicaStatus{
 					"ts-1": {TSUUID: "ts-1", LastSeqNo: 100},
-					"ts-2": {TSUUID: "ts-2", LastSeqNo: 100},
+					"ts-2": {TSUUID: "ts-2", LastSeqNo: 101},
 				},
-				Tombstoned: false,
+				PrimaryTSUUID: "ts-2",
+				Tombstoned:    false,
 			},
 		},
 	}
@@ -122,9 +126,73 @@ func TestTabletRPCRegistry_SelectsAvailableReplica(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get endpoint: %v", err)
 	}
-	// Should select the first available replica
-	if endpoint != "http://ts-1.example.com:9100" && endpoint != "http://ts-2.example.com:9100" {
-		t.Errorf("expected one of the replica endpoints, got '%s'", endpoint)
+	if endpoint != "http://ts-2.example.com:9100" {
+		t.Errorf("expected primary endpoint ts-2, got '%s'", endpoint)
+	}
+}
+
+func TestTabletRPCRegistry_DeterministicFallbackWithoutPrimaryMetadata(t *testing.T) {
+	tsManager := &mockTSManager{
+		descriptors: map[string]TSDescriptor{
+			"ts-a": {
+				Instance:     TSInstance{PermanentUUID: "ts-a", InstanceSeqNo: 1},
+				Registration: TSRegistration{RPCAddress: "ts-a.example.com:9100"},
+			},
+			"ts-b": {
+				Instance:     TSInstance{PermanentUUID: "ts-b", InstanceSeqNo: 1},
+				Registration: TSRegistration{RPCAddress: "ts-b.example.com:9100"},
+			},
+		},
+	}
+	sink := &mockReconcileSink{
+		tablets: map[string]TabletPlacementView{
+			"tablet-1": {
+				TabletID: "tablet-1",
+				Replicas: map[string]TabletReplicaStatus{
+					"ts-b": {TSUUID: "ts-b", LastSeqNo: 9},
+					"ts-a": {TSUUID: "ts-a", LastSeqNo: 9},
+				},
+			},
+		},
+	}
+	registry := NewTabletRPCRegistry(tsManager, sink)
+	endpoint, err := registry.GetEndpoint("tablet-1")
+	if err != nil {
+		t.Fatalf("get endpoint: %v", err)
+	}
+	if endpoint != "http://ts-a.example.com:9100" {
+		t.Fatalf("expected deterministic fallback ts-a, got %s", endpoint)
+	}
+}
+
+func TestTabletRPCRegistry_PrimaryOwnerChangedError(t *testing.T) {
+	tsManager := &mockTSManager{
+		descriptors: map[string]TSDescriptor{
+			"ts-1": {
+				Instance:     TSInstance{PermanentUUID: "ts-1", InstanceSeqNo: 1},
+				Registration: TSRegistration{RPCAddress: "ts-1.example.com:9100"},
+			},
+		},
+	}
+	sink := &mockReconcileSink{
+		tablets: map[string]TabletPlacementView{
+			"tablet-1": {
+				TabletID:      "tablet-1",
+				PrimaryTSUUID: "ts-2",
+				Replicas: map[string]TabletReplicaStatus{
+					"ts-1": {TSUUID: "ts-1", LastSeqNo: 100},
+				},
+			},
+		},
+	}
+	registry := NewTabletRPCRegistry(tsManager, sink)
+	_, err := registry.GetEndpoint("tablet-1")
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	n := dberrors.NormalizeError(err)
+	if n.Code != dberrors.ErrPrimaryOwnerChanged {
+		t.Fatalf("expected ErrPrimaryOwnerChanged, got %s", n.Code)
 	}
 }
 
@@ -154,9 +222,10 @@ func (m *mockReconcileSink) GetTablet(tabletID string) (TabletPlacementView, boo
 		replicas[k] = v
 	}
 	return TabletPlacementView{
-		TabletID:    v.TabletID,
-		Replicas:    replicas,
-		Tombstoned:  v.Tombstoned,
-		LastUpdated: v.LastUpdated,
+		TabletID:      v.TabletID,
+		Replicas:      replicas,
+		PrimaryTSUUID: v.PrimaryTSUUID,
+		Tombstoned:    v.Tombstoned,
+		LastUpdated:   v.LastUpdated,
 	}, true
 }

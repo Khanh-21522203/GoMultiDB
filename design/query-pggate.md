@@ -87,3 +87,5 @@ Implements PgGate session state, transactional write buffering, read/write execu
 
 Changes:
 
+- Finish PgGate implementation and remove scaffold-only behavior in read/write execution paths.
+- Complete real tablet dispatch, partition resolution, and distributed transaction bridge flow as default behavior.

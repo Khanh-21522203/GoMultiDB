@@ -22,8 +22,8 @@ func TestCreateTableRequiresLeader(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected not leader error")
 	}
-	if n := dberrors.NormalizeError(err); n.Code != dberrors.ErrNotLeader {
-		t.Fatalf("expected ErrNotLeader, got %s", n.Code)
+	if n := dberrors.NormalizeError(err); n.Code != dberrors.ErrNotPrimary {
+		t.Fatalf("expected ErrNotPrimary, got %s", n.Code)
 	}
 }
 
@@ -157,8 +157,8 @@ func TestApplyTabletReportRequiresLeader(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected not leader error")
 	}
-	if n := dberrors.NormalizeError(err); n.Code != dberrors.ErrNotLeader {
-		t.Fatalf("expected ErrNotLeader, got %s", n.Code)
+	if n := dberrors.NormalizeError(err); n.Code != dberrors.ErrNotPrimary {
+		t.Fatalf("expected ErrNotPrimary, got %s", n.Code)
 	}
 }
 
@@ -181,7 +181,7 @@ func TestApplyTabletReportDelegatesToSink(t *testing.T) {
 	sink := &testSink{}
 	m.SetReconcileSink(sink)
 
-delta := TabletReportDelta{
+	delta := TabletReportDelta{
 		TSUUID:        "ts-1",
 		IsIncremental: true,
 		SequenceNo:    7,
@@ -312,10 +312,10 @@ func TestAlterTableRequiresLeader(t *testing.T) {
 	}
 	err = m.AlterTable(context.Background(), AlterTableRequest{RequestID: "req", TableID: "t"})
 	if err == nil {
-		t.Fatalf("expected ErrNotLeader")
+		t.Fatalf("expected ErrNotPrimary")
 	}
-	if n := dberrors.NormalizeError(err); n.Code != dberrors.ErrNotLeader {
-		t.Fatalf("expected ErrNotLeader, got %s", n.Code)
+	if n := dberrors.NormalizeError(err); n.Code != dberrors.ErrNotPrimary {
+		t.Fatalf("expected ErrNotPrimary, got %s", n.Code)
 	}
 }
 
@@ -481,6 +481,6 @@ func TestProcessTabletReportRequiresLeader(t *testing.T) {
 		t.Fatalf("new manager: %v", err)
 	}
 	if err := m.ProcessTabletReport(context.Background(), TabletReport{TSUUID: "ts"}); err == nil {
-		t.Fatalf("expected ErrNotLeader")
+		t.Fatalf("expected ErrNotPrimary")
 	}
 }

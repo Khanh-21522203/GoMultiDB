@@ -30,6 +30,9 @@ func TestMemoryReconcileSinkTracksUpdatedReplicas(t *testing.T) {
 	if rep.LastSeqNo != 5 {
 		t.Fatalf("unexpected replica seq: %d", rep.LastSeqNo)
 	}
+	if v.PrimaryTSUUID != "ts-1" {
+		t.Fatalf("expected primary ts-1, got %s", v.PrimaryTSUUID)
+	}
 }
 
 func TestMemoryReconcileSinkTracksRemovedReplicaAndTombstone(t *testing.T) {
@@ -61,7 +64,50 @@ func TestMemoryReconcileSinkTracksRemovedReplicaAndTombstone(t *testing.T) {
 	if len(v.Replicas) != 0 {
 		t.Fatalf("expected no replicas, got %d", len(v.Replicas))
 	}
+	if v.PrimaryTSUUID != "" {
+		t.Fatalf("expected empty primary owner for tombstoned tablet, got %s", v.PrimaryTSUUID)
+	}
 	if v.LastUpdated != 3 {
 		t.Fatalf("unexpected last updated seq: %d", v.LastUpdated)
+	}
+}
+
+func TestMemoryReconcileSinkPrimaryDeterministicBySeqAndTSUUID(t *testing.T) {
+	sink := NewMemoryReconcileSink()
+	if err := sink.ApplyTabletReport(context.Background(), TabletReportDelta{
+		TSUUID:     "ts-b",
+		SequenceNo: 10,
+		Updated:    []string{"tablet-a"},
+	}); err != nil {
+		t.Fatalf("apply ts-b report: %v", err)
+	}
+	if err := sink.ApplyTabletReport(context.Background(), TabletReportDelta{
+		TSUUID:     "ts-a",
+		SequenceNo: 10,
+		Updated:    []string{"tablet-a"},
+	}); err != nil {
+		t.Fatalf("apply ts-a report: %v", err)
+	}
+	v, ok := sink.GetTablet("tablet-a")
+	if !ok {
+		t.Fatalf("expected tablet view")
+	}
+	if v.PrimaryTSUUID != "ts-a" {
+		t.Fatalf("expected lexicographic tiebreak to ts-a, got %s", v.PrimaryTSUUID)
+	}
+
+	if err := sink.ApplyTabletReport(context.Background(), TabletReportDelta{
+		TSUUID:     "ts-b",
+		SequenceNo: 11,
+		Updated:    []string{"tablet-a"},
+	}); err != nil {
+		t.Fatalf("apply newer ts-b report: %v", err)
+	}
+	v, ok = sink.GetTablet("tablet-a")
+	if !ok {
+		t.Fatalf("expected tablet view")
+	}
+	if v.PrimaryTSUUID != "ts-b" {
+		t.Fatalf("expected highest-seq primary ts-b, got %s", v.PrimaryTSUUID)
 	}
 }

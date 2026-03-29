@@ -29,6 +29,9 @@ Defines shared contracts (errors, IDs, envelopes/versioning, idempotency store) 
 ### Data Model
 - Error model:
   - `DBError {Code, Message, Retryable, Cause}`.
+  - Post-Raft routing codes in active control/data routing paths:
+    - `ErrNotPrimary`
+    - `ErrPrimaryOwnerChanged`
 - Identity model:
   - `TxnID [16]byte`, `RequestID string`, typed node/table/tablet IDs.
 - Request metadata:
@@ -63,6 +66,7 @@ Defines shared contracts (errors, IDs, envelopes/versioning, idempotency store) 
 - Fingerprint mismatch on active idempotency key returns `ErrIdempotencyConflict`.
 - MemTracker over-limit consume returns `ErrOOMKill`.
 - Node-instance mismatch across data directories returns error during startup validation.
+- Primary-routing callers should treat `ErrNotPrimary`/`ErrPrimaryOwnerChanged` as retryable reroute signals.
 
 ### Observability and Debugging
 - Debug points:
@@ -77,6 +81,6 @@ Defines shared contracts (errors, IDs, envelopes/versioning, idempotency store) 
 ### Risks and Notes
 - `MemTracker` tracks logical byte accounting by callers; under-reporting or missing release calls can skew enforcement.
 - `FSManager` assumes first data/WAL directory for canonical tablet path helpers.
+- Raft-only routing error codes were removed with `internal/raft`; active routing relies on primary-owner errors (`ErrNotPrimary`, `ErrPrimaryOwnerChanged`).
 
 Changes:
-

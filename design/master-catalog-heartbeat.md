@@ -1,7 +1,7 @@
 # Master Catalog Heartbeat
 
 ### Purpose
-Tracks authoritative table/tablet metadata, enforces leader-only catalog mutations with request dedupe, and reconciles tablet-server heartbeat reports into placement directives.
+Tracks authoritative table/tablet metadata, enforces primary-only catalog mutations with request dedupe, and reconciles tablet-server heartbeat reports into placement directives.
 
 ### Scope
 **In scope:**
@@ -14,16 +14,16 @@ Tracks authoritative table/tablet metadata, enforces leader-only catalog mutatio
 - Distributed snapshot execution (covered in snapshot feature).
 
 ### Primary User Flow
-1. Master leader receives tserver heartbeat with instance/registration/report data.
+1. Master primary receives tserver heartbeat with instance/registration/report data.
 2. Master updates tserver descriptor and reconciles reported tablet placements.
 3. Planner computes create/delete tablet directives for under/over replication.
 4. Catalog APIs (`CreateTable`, `AlterTable`, `DeleteTable`, `CreateTablet`) mutate metadata with idempotent request semantics.
 
 ### System Flow
 1. Heartbeat entry: `heartbeat.Service.TSHeartbeat`.
-2. Validates leader status + tserver identity and sequence ordering.
+2. Validates primary status + tserver identity and sequence ordering.
 3. Applies incremental/full tablet report via `catalog.Manager.ApplyTabletReport` to `MemoryReconcileSink`.
-4. `buildActionsResponse` filters stale tservers, evaluates each changed tablet through `DirectivePlanner.PlanForTablet`, and returns `TabletActions`.
+4. `buildActionsResponse` filters stale tservers, re-resolves tablet primary ownership when needed, evaluates each changed tablet through `DirectivePlanner.PlanForTablet`, and returns `TabletActions`.
 5. Catalog mutation path uses `CatalogStore.Apply` and reloads snapshot (`LoadSnapshot`) after every accepted mutation.
 
 ```
@@ -49,13 +49,13 @@ TSHeartbeat
 
 ### Interfaces and Contracts
 - Catalog contracts:
-  - `CreateTable`, `AlterTable`, `DeleteTable`, `CreateTablet` require leader mode.
+  - `CreateTable`, `AlterTable`, `DeleteTable`, `CreateTablet` require primary mode.
   - Duplicate `RequestID` with different fingerprint returns `ErrIdempotencyConflict`.
 - Heartbeat RPC contract:
   - Service `heartbeat`, method `ts_heartbeat`.
   - Returns `NeedReregister` and `NeedFullTabletReport` when state is out-of-sync.
 - Registry contract:
-  - `TabletRPCRegistry.GetEndpoint(tabletID)` resolves `http://<ts-rpc-address>` from reconcile + tserver metadata.
+  - `TabletRPCRegistry.GetEndpoint(tabletID)` resolves `http://<ts-rpc-address>` from reconcile + tserver metadata using `PrimaryTSUUID` (or deterministic fallback by sequence/tserver ID).
 
 ### Dependencies
 **Internal modules:**
@@ -67,13 +67,14 @@ TSHeartbeat
 - None; data is in-process or persisted through internal Rocks abstraction.
 
 ### Failure Modes and Edge Cases
-- Non-leader catalog or heartbeat operations return `ErrNotLeader` (retryable).
+- Non-primary catalog or heartbeat operations return `ErrNotPrimary` (retryable).
 - Catalog state transition violations return `ErrConflict`.
 - Duplicate request ID with changed request shape returns `ErrIdempotencyConflict`.
 - Stale or missing incremental report sequences force `NeedFullTabletReport`.
 - Registry endpoint lookup errors:
   - unknown tablet -> `ErrInvalidArgument`
   - tombstoned tablet -> `ErrConflict`
+  - stale/missing primary owner -> `ErrPrimaryOwnerChanged`
   - no live replica -> `ErrRetryableUnavailable`
 
 ### Observability and Debugging
@@ -89,7 +90,6 @@ TSHeartbeat
 
 ### Risks and Notes
 - `MemoryReconcileSink` is in-memory; reconcile view is rebuilt from heartbeat traffic, not durable state.
-- Registry leader selection is currently “first replica in map iteration”, not raft-leader-aware.
+- Primary ownership is heartbeat-derived; failover quality depends on timely heartbeat freshness and sequence monotonicity.
 
 Changes:
-

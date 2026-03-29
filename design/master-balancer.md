@@ -64,3 +64,5 @@ Computes per-round replica and leader balancing actions from cluster placement s
 
 Changes:
 
+- Redefine balancer objectives after Raft removal, including whether RF-based add/remove actions remain supported.
+- Remove or replace leader-move planning with post-Raft shard ownership distribution rules.

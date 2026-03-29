@@ -8,9 +8,8 @@ import (
 type ErrorCode string
 
 const (
-	ErrNotLeader            ErrorCode = "ERR_NOT_LEADER"
-	ErrStaleTerm            ErrorCode = "ERR_STALE_TERM"
-	ErrLeaseExpired         ErrorCode = "ERR_LEASE_EXPIRED"
+	ErrNotPrimary           ErrorCode = "ERR_NOT_PRIMARY"
+	ErrPrimaryOwnerChanged  ErrorCode = "ERR_PRIMARY_OWNER_CHANGED"
 	ErrTimeout              ErrorCode = "ERR_TIMEOUT"
 	ErrConflict             ErrorCode = "ERR_CONFLICT"
 	ErrRetryableUnavailable ErrorCode = "ERR_RETRYABLE_UNAVAILABLE"

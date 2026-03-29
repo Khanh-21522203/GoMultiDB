@@ -83,3 +83,5 @@ Owns distributed transaction record lifecycle, conflict resolution policy agains
 
 Changes:
 
+- Redefine transaction atomicity and failure guarantees after Raft removal, including clear post-failure commit/abort behavior.
+- Decide and document whether cross-shard distributed transactions remain supported in the simplified architecture.

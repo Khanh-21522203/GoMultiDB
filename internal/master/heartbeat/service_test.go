@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	dberrors "GoMultiDB/internal/common/errors"
 	"GoMultiDB/internal/master/catalog"
 )
 
@@ -15,6 +16,9 @@ func TestHeartbeatRequiresLeader(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatalf("expected not leader error")
+	}
+	if n := dberrors.NormalizeError(err); n.Code != dberrors.ErrNotPrimary {
+		t.Fatalf("expected ErrNotPrimary, got %s", n.Code)
 	}
 }
 

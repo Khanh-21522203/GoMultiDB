@@ -15,6 +15,7 @@ Owns CDC stream event storage, checkpoint progression, stream service APIs, rete
 
 **Out of scope:**
 - Downstream xCluster apply semantics (`replication-xcluster.md`).
+- Local Raft/consensus membership decisions.
 
 ### Primary User Flow
 1. Producer appends ordered events per `(stream, tablet)`.
@@ -38,6 +39,10 @@ Owns CDC stream event storage, checkpoint progression, stream service APIs, rete
    - `SplitRemapper.RegisterSplit` copies parent checkpoint to left/right child.
 5. RPC poller path:
    - `Poller.RunOnce` = load checkpoint -> remote `GetChanges` -> apply events -> advance checkpoint.
+6. Ownership semantics:
+   - CDC remains an optional async replication/changefeed path.
+   - Source ordering is defined by monotonic `Sequence` per `(stream, tablet)` across ownership transitions.
+   - Checkpoints are monotonic and non-regressing for the same `(stream, tablet)`.
 
 ### Data Model
 - Core models (`model.go`):
@@ -94,8 +99,6 @@ Owns CDC stream event storage, checkpoint progression, stream service APIs, rete
 ### Risks and Notes
 - In-memory store is not durable; file checkpoint store only persists checkpoints, not event backlog.
 - `MetricsRegistry` encodes stream/tablet identity in metric names rather than label sets.
+- If ownership transfer occurs, the new source owner must continue sequence progression from the previous owner; otherwise events are treated as duplicates/conflicts by consumers.
 
 Changes:
-
-- Decide and document whether CDC remains enabled as an optional async replication/changefeed path after Raft removal.
-- If retained, define source ordering and checkpoint guarantees under post-Raft primary ownership semantics.

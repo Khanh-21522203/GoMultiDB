@@ -11,10 +11,10 @@ GoMultiDB is a Go-based distributed database prototype with two process roles (`
 │ Uses:  Query Layer, Master Control Plane, Tablet Services              │
 └────────────────────────────────────────────────────────────────────────┘
 ┌─ Query Layer ───────────────────────────────────────────────────────────┐
-│ Owns: CQL protocol listener, SQL coordinator, PgGate session bridge     │
-│ Entry: internal/query/cql/listener.go, internal/query/sql/coordinator.go│
+│ Owns: CQL protocol listener/execution, SQL managed coordinator, PgGate   │
+│ Entry: internal/query/cql/listener.go, internal/query/sql/managed_coordinator.go│
 │ Key:   internal/query/cql, internal/query/sql, internal/query/pggate    │
-│ Uses:  Shared And Platform, Transactions                                │
+│ Uses:  Shared And Platform, Transactions, Tablet Services               │
 └─────────────────────────────────────────────────────────────────────────┘
 ┌─ Master Control Plane ──────────────────────────────────────────────────┐
 │ Owns: catalog state, heartbeats, snapshot coordination, balancing       │
@@ -61,24 +61,24 @@ GoMultiDB is a Go-based distributed database prototype with two process roles (`
 
 | Feature | Description | File | Status |
 |---------|-------------|------|--------|
-| Runtime Bootstrap | Bootstraps master/tserver runtimes and node config defaults | [runtime-bootstrap.md](runtime-bootstrap.md) | Stable |
+| Runtime Bootstrap | Bootstraps master/tserver runtimes, primary-owner wiring, and node config defaults | [runtime-bootstrap.md](runtime-bootstrap.md) | Stable |
 | RPC Services | HTTP JSON-RPC transport plus ping RPC contract | [rpc-services.md](rpc-services.md) | Stable |
-| CQL Gateway | CQL protocol framing, listener, session/prepared statement handling | [query-cql-gateway.md](query-cql-gateway.md) | In Progress |
-| SQL Control | Local SQL coordinator and external postgres process manager | [query-sql-control.md](query-sql-control.md) | In Progress |
-| PgGate | PgGate session, transaction metadata, read/write dispatch bridge | [query-pggate.md](query-pggate.md) | In Progress |
+| CQL Gateway | CQL protocol framing, listener, prepared cache, and core DML execution engine | [query-cql-gateway.md](query-cql-gateway.md) | In Progress |
+| SQL Control | Managed SQL coordinator with optional postgres subprocess mode and fallback | [query-sql-control.md](query-sql-control.md) | In Progress |
+| PgGate | PgGate session/transaction bridge with default in-process resolver/dispatcher/coordinator | [query-pggate.md](query-pggate.md) | In Progress |
 | Master Catalog Heartbeat | Table/tablet catalog mutations, heartbeat reconciliation, and syscatalog persistence | [master-catalog-heartbeat.md](master-catalog-heartbeat.md) | Stable |
 | Master Snapshot Coordinator | Distributed snapshot coordinator and master snapshot RPC/service/store paths | [master-snapshot-coordinator.md](master-snapshot-coordinator.md) | Stable |
-| Master Balancer | Replica/leader placement planner and cooldown logic | [master-balancer.md](master-balancer.md) | Stable |
-| Tablet Lifecycle | Tablet state machine, metadata durability, split orchestration, partition map | [tablet-lifecycle.md](tablet-lifecycle.md) | Stable |
+| Master Balancer | Replica/primary ownership planner and cooldown logic | [master-balancer.md](master-balancer.md) | Stable |
+| Tablet Lifecycle | Tablet state machine with ownership epoch transfer semantics and split orchestration | [tablet-lifecycle.md](tablet-lifecycle.md) | Stable |
 | Tablet Snapshot Bootstrap | Tablet-level snapshot copy/restore and remote bootstrap transfer sessions | [tablet-snapshot-bootstrap.md](tablet-snapshot-bootstrap.md) | Stable |
 | CDC Replication | CDC event store, stream API, checkpoint persistence, split remapping | [replication-cdc.md](replication-cdc.md) | Stable |
 | xCluster Apply | Event apply loop with retries, dedupe, and checkpoint advancement | [replication-xcluster.md](replication-xcluster.md) | Stable |
-| Replication Control Plane | Stream/job registry snapshots and scheduler ticks/in-flight caps | [replication-controlplane.md](replication-controlplane.md) | Stable |
-| Replication Observability | Metrics registry, health endpoints, drain and admin handlers | [replication-observability.md](replication-observability.md) | Stable |
+| Replication Control Plane | Stream/job registry snapshots, ownership-epoch signals, and scheduler ticks/in-flight caps | [replication-controlplane.md](replication-controlplane.md) | Stable |
+| Replication Observability | Metrics registry, ownership-transition metrics, health endpoints, and admin handlers | [replication-observability.md](replication-observability.md) | Stable |
 | Transaction Coordinator | Transaction record lifecycle, conflict policy, wait queue deadlock abort | [txn-coordinator.md](txn-coordinator.md) | Stable |
 | Storage Foundation | DocDB MVCC/intents on top of Rocks memory KV and WAL segments | [storage-foundation.md](storage-foundation.md) | Stable |
 | Shared Platform | Shared error/ID/type/version contracts and platform FS/memory guards | [shared-platform.md](shared-platform.md) | Stable |
-| Testing Infrastructure | In-process harnesses, infra integration suite, stress harness | [testing-infrastructure.md](testing-infrastructure.md) | Stable |
+| Testing Infrastructure | In-process harnesses with ownership/routing invariants, infra integration suite, stress harness | [testing-infrastructure.md](testing-infrastructure.md) | Stable |
 | Automation Tooling | Compose/test/stress PowerShell scripts and deployment scaffolding | [automation-tooling.md](automation-tooling.md) | Stable |
 
 ## Cross-Cutting Concerns

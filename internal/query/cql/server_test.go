@@ -1,7 +1,9 @@
 package cql
 
 import (
+	"bytes"
 	"context"
+	"strings"
 	"testing"
 
 	dberrors "GoMultiDB/internal/common/errors"
@@ -85,13 +87,18 @@ func TestLocalServerRouteBatch(t *testing.T) {
 		t.Fatalf("start: %v", err)
 	}
 
-	// RouteBatch now accepts any type and returns stub response.
-	resp, err := s.RouteBatch(context.Background(), map[string]any{})
+	resp, err := s.RouteBatch(context.Background(), map[string]any{
+		"statements": []Request{{ConnID: "batch-conn", Query: "INSERT INTO t (k) VALUES (1)"}},
+	})
 	if err != nil {
 		t.Fatalf("route batch: %v", err)
 	}
 	if !resp.Applied {
 		t.Fatalf("expected batch applied response")
+	}
+
+	if _, err := s.RouteBatch(context.Background(), map[string]any{}); err == nil {
+		t.Fatalf("expected validation error for empty batch request")
 	}
 }
 
@@ -159,7 +166,8 @@ func TestLocalServerPreparedBatchDispatch(t *testing.T) {
 	}
 
 	resp, err := s.RouteBatch(context.Background(), map[string]any{
-		"type": "LOGGED",
+		"type":    "LOGGED",
+		"conn_id": "conn-2",
 		"queries": []BatchQuery{
 			{Kind: 1, QueryID: []byte(stmt.ID)},
 			{Kind: 0, QueryString: "UPDATE t SET v=? WHERE k=?"},
@@ -170,6 +178,14 @@ func TestLocalServerPreparedBatchDispatch(t *testing.T) {
 	}
 	if !resp.Applied {
 		t.Fatalf("expected applied batch")
+	}
+
+	selectResp, err := s.Route(context.Background(), Request{ConnID: "conn-2", Query: "SELECT * FROM t"})
+	if err != nil {
+		t.Fatalf("select after prepared batch: %v", err)
+	}
+	if selectResp.Rows < 1 {
+		t.Fatalf("expected at least one row after batch writes, got %d", selectResp.Rows)
 	}
 }
 
@@ -235,4 +251,93 @@ func TestLocalServerStatusSnapshot(t *testing.T) {
 	if status.Prepared.CacheMisses < 1 {
 		t.Fatalf("expected prepared cache misses >= 1, got %d", status.Prepared.CacheMisses)
 	}
+}
+
+func TestLocalServerRoutesCoreDMLThroughExecutionEngine(t *testing.T) {
+	s := NewLocalServer()
+	ctx := context.Background()
+	if err := s.Start(ctx, Config{Enabled: true, BindAddress: "127.0.0.1:0"}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	connID := "conn-dml"
+	if _, err := s.Route(ctx, Request{ConnID: connID, Query: "INSERT INTO users (k, v) VALUES (1, 'a')"}); err != nil {
+		t.Fatalf("insert #1: %v", err)
+	}
+	if _, err := s.Route(ctx, Request{ConnID: connID, Query: "INSERT INTO users (k, v) VALUES (2, 'b')"}); err != nil {
+		t.Fatalf("insert #2: %v", err)
+	}
+
+	read, err := s.Route(ctx, Request{ConnID: connID, Query: "SELECT * FROM users"})
+	if err != nil {
+		t.Fatalf("select: %v", err)
+	}
+	if read.Rows != 2 {
+		t.Fatalf("expected rows=2 after inserts, got %d", read.Rows)
+	}
+
+	if _, err := s.Route(ctx, Request{ConnID: connID, Query: "DELETE FROM users WHERE k=1"}); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	read, err = s.Route(ctx, Request{ConnID: connID, Query: "SELECT * FROM users"})
+	if err != nil {
+		t.Fatalf("select after delete: %v", err)
+	}
+	if read.Rows != 1 {
+		t.Fatalf("expected rows=1 after delete, got %d", read.Rows)
+	}
+}
+
+func TestListenerReturnsErrorForUnsupportedRegisterAndAuthOpcodes(t *testing.T) {
+	s := NewLocalServer()
+	ctx := context.Background()
+	if err := s.Start(ctx, Config{Enabled: true, BindAddress: "127.0.0.1:0"}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	codec := NewCodec()
+
+	reg := &RegisterRequest{Events: []string{"TOPOLOGY_CHANGE"}}
+	buf := &bytes.Buffer{}
+	if err := reg.Marshal(codec, buf); err != nil {
+		t.Fatalf("marshal register: %v", err)
+	}
+	resp := s.listener.handleFrame(ctx, codec, "listener-test", &Frame{
+		Version: protocolVersion,
+		Stream:  1,
+		Opcode:  OpcodeRegister,
+		Body:    buf.Bytes(),
+	})
+	if resp.Opcode != OpcodeError {
+		t.Fatalf("expected register to return ERROR, got opcode=%d", resp.Opcode)
+	}
+	msg := decodeErrorMessage(t, codec, resp.Body)
+	if !strings.Contains(strings.ToLower(msg), "not supported") {
+		t.Fatalf("expected unsupported message, got %q", msg)
+	}
+
+	resp = s.listener.handleFrame(ctx, codec, "listener-test", &Frame{
+		Version: protocolVersion,
+		Stream:  2,
+		Opcode:  OpcodeAuthResponse,
+	})
+	if resp.Opcode != OpcodeError {
+		t.Fatalf("expected auth opcode to return ERROR, got opcode=%d", resp.Opcode)
+	}
+	msg = decodeErrorMessage(t, codec, resp.Body)
+	if !strings.Contains(strings.ToLower(msg), "not supported") {
+		t.Fatalf("expected auth unsupported message, got %q", msg)
+	}
+}
+
+func decodeErrorMessage(t *testing.T, codec *Codec, body []byte) string {
+	t.Helper()
+	rd := bytes.NewReader(body)
+	if _, err := codec.ReadInt(rd); err != nil {
+		t.Fatalf("read error code: %v", err)
+	}
+	msg, err := codec.ReadString(rd)
+	if err != nil {
+		t.Fatalf("read error message: %v", err)
+	}
+	return msg
 }

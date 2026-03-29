@@ -118,19 +118,13 @@ func (m *Manager) ExecReadWithRequest(ctx context.Context, sessionID string, op 
 	dispatcher := m.tabletDispatcher
 	resolver := m.partitionResolver
 	m.mu.RUnlock()
+	if dispatcher == nil || resolver == nil {
+		return ExecResponse{}, dberrors.New(dberrors.ErrRetryableUnavailable, "pggate read bridge is not configured", true, nil)
+	}
 
-	var rows int
-	if dispatcher != nil && resolver != nil {
-		rows, err = m.execReadReal(ctx, s, op)
-		if err != nil {
-			return ExecResponse{}, err
-		}
-	} else {
-		// Stub behaviour: return FetchSize as row count.
-		rows = op.FetchSize
-		if rows <= 0 {
-			rows = 1
-		}
+	rows, err := m.execReadReal(ctx, s, op)
+	if err != nil {
+		return ExecResponse{}, err
 	}
 
 	resp := ExecResponse{Applied: true, Rows: rows, InTxn: s.Txn != nil}

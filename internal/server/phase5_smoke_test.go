@@ -7,7 +7,6 @@ import (
 
 	dberrors "GoMultiDB/internal/common/errors"
 	"GoMultiDB/internal/query/cql"
-	"GoMultiDB/internal/query/sql"
 	rpcpkg "GoMultiDB/internal/rpc"
 	"GoMultiDB/internal/storage/rocks"
 )
@@ -59,8 +58,7 @@ func TestPhase5SmokeRuntimeQueryStatus(t *testing.T) {
 		t.Fatalf("cql route from runtime: %v", err)
 	}
 
-	s := r.sqlCoord.(*sql.LocalCoordinator)
-	if err := s.Stop(ctx); err != nil {
+	if err := r.sqlCoord.Stop(ctx); err != nil {
 		t.Fatalf("stop sql coordinator: %v", err)
 	}
 
@@ -72,7 +70,7 @@ func TestPhase5SmokeRuntimeQueryStatus(t *testing.T) {
 		t.Fatalf("expected sql unhealthy after stop")
 	}
 
-	n := dberrors.NormalizeError(s.Health(ctx))
+	n := dberrors.NormalizeError(r.sqlCoord.Health(ctx))
 	if n.Code != dberrors.ErrRetryableUnavailable {
 		t.Fatalf("expected retryable unavailable health code after stop, got %s", n.Code)
 	}

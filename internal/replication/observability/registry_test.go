@@ -91,3 +91,33 @@ func TestSnapshotCardinalityStability(t *testing.T) {
 		t.Fatalf("expected stable cardinality of 2 label sets, got %d", len(snap))
 	}
 }
+
+func TestRecordPrimaryOwnershipTransition(t *testing.T) {
+	r := NewRegistry()
+	ctx := context.Background()
+
+	if err := r.RecordPrimaryOwnershipTransition(ctx, "s-own", "t-own", "ts-1", "ts-2", 4); err != nil {
+		t.Fatalf("record primary ownership transition: %v", err)
+	}
+	snap, err := r.Snapshot(ctx)
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	if len(snap) != 1 {
+		t.Fatalf("expected one ownership metric sample, got %d", len(snap))
+	}
+
+	health, err := r.Healthz(ctx)
+	if err != nil {
+		t.Fatalf("healthz: %v", err)
+	}
+	found := false
+	for _, hs := range health {
+		if hs.Component == "primary_ownership" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected primary_ownership health component")
+	}
+}

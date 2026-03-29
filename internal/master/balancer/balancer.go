@@ -9,7 +9,7 @@
 // Priority order (per plan):
 //  1. Under-replicated tablets  → add_replica  (highest priority)
 //  2. Over-replicated tablets   → remove_replica
-//  3. Leader imbalance          → move_leader  (if LeaderBalancingEnabled)
+//  3. Primary imbalance         → transfer_primary (if PrimaryBalancingEnabled)
 //
 // Actions per round are capped by the per-type concurrency limits.
 // A cooldown map prevents re-moving the same tablet within CooldownWindow.
@@ -27,15 +27,17 @@ import (
 type NodeLoad struct {
 	NodeID       string
 	ReplicaCount int
-	LeaderCount  int
-	IsLive       bool
+	// LeaderCount is interpreted as primary-owner count in post-Raft mode.
+	LeaderCount int
+	IsLive      bool
 	// Placement is a rack/zone label used to enforce diverse replica placement.
 	Placement string
 }
 
-// ReplicaPlacement records which node holds a replica and whether it is leader.
+// ReplicaPlacement records which node holds a replica and whether it is primary.
 type ReplicaPlacement struct {
-	NodeID   string
+	NodeID string
+	// IsLeader is retained for compatibility; it represents primary ownership.
 	IsLeader bool
 }
 
@@ -49,7 +51,7 @@ type TabletPlacement struct {
 
 // BalanceAction is a directive emitted by the planner.
 type BalanceAction struct {
-	// Type is one of "add_replica", "remove_replica", "move_leader".
+	// Type is one of "add_replica", "remove_replica", "transfer_primary".
 	Type     string
 	TabletID string
 	FromNode string // empty for add_replica
@@ -77,10 +79,14 @@ type Config struct {
 	MaxConcurrentAdds int
 	// MaxConcurrentRemovals is the maximum remove_replica actions per round.
 	MaxConcurrentRemovals int
-	// MaxConcurrentLeaderMoves is the maximum move_leader actions per round.
+	// MaxConcurrentLeaderMoves is deprecated. Use MaxConcurrentPrimaryTransfers.
 	MaxConcurrentLeaderMoves int
-	// LeaderBalancingEnabled enables leader-count balancing (Priority 3).
+	// MaxConcurrentPrimaryTransfers is the maximum transfer_primary actions per round.
+	MaxConcurrentPrimaryTransfers int
+	// LeaderBalancingEnabled is deprecated. Use PrimaryBalancingEnabled.
 	LeaderBalancingEnabled bool
+	// PrimaryBalancingEnabled enables primary-owner balancing (Priority 3).
+	PrimaryBalancingEnabled bool
 	// CooldownWindow prevents re-actioning the same tablet within this duration.
 	// Zero disables cooldown.
 	CooldownWindow time.Duration
@@ -95,8 +101,18 @@ func (c *Config) defaults() {
 	if c.MaxConcurrentRemovals <= 0 {
 		c.MaxConcurrentRemovals = 5
 	}
+	if c.MaxConcurrentPrimaryTransfers <= 0 {
+		if c.MaxConcurrentLeaderMoves > 0 {
+			c.MaxConcurrentPrimaryTransfers = c.MaxConcurrentLeaderMoves
+		} else {
+			c.MaxConcurrentPrimaryTransfers = 5
+		}
+	}
 	if c.MaxConcurrentLeaderMoves <= 0 {
-		c.MaxConcurrentLeaderMoves = 5
+		c.MaxConcurrentLeaderMoves = c.MaxConcurrentPrimaryTransfers
+	}
+	if !c.PrimaryBalancingEnabled && c.LeaderBalancingEnabled {
+		c.PrimaryBalancingEnabled = true
 	}
 	if c.CooldownWindow <= 0 {
 		c.CooldownWindow = 30 * time.Second
@@ -135,7 +151,7 @@ func (p *Planner) PlanBalanceRound(state ClusterState) ([]BalanceAction, error) 
 	nodeLoad := loadIndex(state.Nodes)
 
 	var actions []BalanceAction
-	adds, rems, moves := 0, 0, 0
+	adds, rems, transfers := 0, 0, 0
 
 	// Helper: emit action if budget allows.
 	emit := func(a BalanceAction) bool {
@@ -150,11 +166,11 @@ func (p *Planner) PlanBalanceRound(state ClusterState) ([]BalanceAction, error) 
 				return false
 			}
 			rems++
-		case "move_leader":
-			if moves >= p.cfg.MaxConcurrentLeaderMoves {
+		case "transfer_primary", "move_leader":
+			if transfers >= p.cfg.MaxConcurrentPrimaryTransfers {
 				return false
 			}
-			moves++
+			transfers++
 		}
 		actions = append(actions, a)
 		p.cooldown[a.TabletID] = now
@@ -219,23 +235,23 @@ func (p *Planner) PlanBalanceRound(state ClusterState) ([]BalanceAction, error) 
 		}
 	}
 
-	// ── Priority 3: Leader imbalance ─────────────────────────────────────────
-	if p.cfg.LeaderBalancingEnabled {
-		meanLeaders := meanLeaderCount(state.Nodes, liveNodes)
+	// ── Priority 3: Primary-owner imbalance ──────────────────────────────────
+	if p.cfg.PrimaryBalancingEnabled {
+		meanPrimaries := meanPrimaryCount(state.Nodes, liveNodes)
 		for _, tab := range state.Tablets {
 			if inCooldown(p.cooldown, tab.TabletID, now, p.cfg.CooldownWindow) {
 				continue
 			}
-			from, to := pickLeaderMove(tab, nodeLoad, liveNodes, meanLeaders)
+			from, to := pickPrimaryTransfer(tab, nodeLoad, liveNodes, meanPrimaries)
 			if from == "" || to == "" {
 				continue
 			}
 			if !emit(BalanceAction{
-				Type:     "move_leader",
+				Type:     "transfer_primary",
 				TabletID: tab.TabletID,
 				FromNode: from,
 				ToNode:   to,
-				Reason:   "leader imbalance",
+				Reason:   "primary ownership imbalance",
 			}) {
 				break
 			}
@@ -373,7 +389,7 @@ func pickAddNode(
 }
 
 // pickRemoveNode returns the node to remove a replica from:
-// prefer the most-loaded non-leader node that holds a live replica.
+// prefer the most-loaded non-primary node that holds a live replica.
 func pickRemoveNode(
 	tab TabletPlacement,
 	nodeLoad map[string]NodeLoad,
@@ -390,7 +406,7 @@ func pickRemoveNode(
 			continue
 		}
 		nl := nodeLoad[r.NodeID]
-		candidates = append(candidates, candidate{r.NodeID, nl.ReplicaCount, r.IsLeader})
+		candidates = append(candidates, candidate{r.NodeID, nl.ReplicaCount, replicaIsPrimary(r)})
 	}
 	if len(candidates) == 0 {
 		return ""
@@ -405,8 +421,8 @@ func pickRemoveNode(
 	return candidates[0].nodeID
 }
 
-// meanLeaderCount returns the mean leader count across live nodes.
-func meanLeaderCount(nodes []NodeLoad, live map[string]bool) float64 {
+// meanPrimaryCount returns the mean primary-owner count across live nodes.
+func meanPrimaryCount(nodes []NodeLoad, live map[string]bool) float64 {
 	total, count := 0, 0
 	for _, n := range nodes {
 		if live[n.NodeID] {
@@ -420,44 +436,48 @@ func meanLeaderCount(nodes []NodeLoad, live map[string]bool) float64 {
 	return float64(total) / float64(count)
 }
 
-// pickLeaderMove returns (from, to) nodes for a leader move on the given tablet.
-// from must be the current leader; to must be a replica on a less-loaded node.
-func pickLeaderMove(
+// pickPrimaryTransfer returns (from, to) nodes for a primary transfer on a tablet.
+// from must be the current primary; to must be a replica on a less-loaded node.
+func pickPrimaryTransfer(
 	tab TabletPlacement,
 	nodeLoad map[string]NodeLoad,
 	live map[string]bool,
 	mean float64,
 ) (from, to string) {
-	var leaderNode string
+	var primaryNode string
 	var followerCandidates []NodeLoad
 	for _, r := range tab.Replicas {
 		if !live[r.NodeID] {
 			continue
 		}
 		nl := nodeLoad[r.NodeID]
-		if r.IsLeader {
-			leaderNode = r.NodeID
+		if replicaIsPrimary(r) {
+			primaryNode = r.NodeID
 		} else {
 			followerCandidates = append(followerCandidates, nl)
 		}
 	}
-	if leaderNode == "" {
+	if primaryNode == "" {
 		return "", ""
 	}
-	leaderLoad := nodeLoad[leaderNode]
-	if float64(leaderLoad.LeaderCount) <= mean {
-		return "", "" // leader is not overloaded
+	primaryLoad := nodeLoad[primaryNode]
+	if float64(primaryLoad.LeaderCount) <= mean {
+		return "", "" // primary owner is not overloaded
 	}
-	// Pick follower with lowest leader count that is below mean.
+	// Pick follower with lowest primary count that is below mean.
 	sort.Slice(followerCandidates, func(i, j int) bool {
 		return followerCandidates[i].LeaderCount < followerCandidates[j].LeaderCount
 	})
 	for _, fc := range followerCandidates {
 		if float64(fc.LeaderCount) < mean {
-			return leaderNode, fc.NodeID
+			return primaryNode, fc.NodeID
 		}
 	}
 	return "", ""
+}
+
+func replicaIsPrimary(r ReplicaPlacement) bool {
+	return r.IsLeader
 }
 
 // placementsAvailable counts distinct placement labels among live nodes.

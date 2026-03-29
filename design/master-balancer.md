@@ -1,7 +1,7 @@
 # Master Balancer
 
 ### Purpose
-Computes per-round replica and leader balancing actions from cluster placement snapshots using bounded concurrency budgets and cooldown windows.
+Computes per-round replica and primary-ownership balancing actions from cluster placement snapshots using bounded concurrency budgets and cooldown windows.
 
 ### Scope
 **In scope:**
@@ -14,7 +14,7 @@ Computes per-round replica and leader balancing actions from cluster placement s
 
 ### Primary User Flow
 1. Control loop provides current `ClusterState`.
-2. Planner emits ordered `BalanceAction` list (`add_replica`, `remove_replica`, `move_leader`).
+2. Planner emits ordered `BalanceAction` list (`add_replica`, `remove_replica`, `transfer_primary`).
 3. Caller executes actions and reports success/failure (`NotifyActionResult`).
 
 ### System Flow
@@ -22,12 +22,12 @@ Computes per-round replica and leader balancing actions from cluster placement s
 2. Priority stages:
    - Under-replicated tablets -> choose add candidate.
    - Over-replicated tablets -> choose removal victim.
-   - Optional leader balancing -> move leader from overloaded to underloaded replica.
+   - Optional primary balancing -> transfer primary ownership from overloaded to underloaded replica.
 3. Each emitted action updates optimistic node load and writes tablet cooldown timestamp.
 
 ### Data Model
 - `NodeLoad`:
-  - `NodeID`, `ReplicaCount`, `LeaderCount`, `IsLive`, `Placement`.
+  - `NodeID`, `ReplicaCount`, `LeaderCount` (interpreted as primary-owner count), `IsLive`, `Placement`.
 - `TabletPlacement`:
   - `TabletID`, `Replicas []ReplicaPlacement`, `RF`.
 - `BalanceAction`:
@@ -38,6 +38,9 @@ Computes per-round replica and leader balancing actions from cluster placement s
 - `PlanBalanceRound(state)` returns best-effort actions up to configured caps.
 - `NotifyActionResult(tabletID, success)` clears cooldown when action fails.
 - `GetPlacementViolations(state)` reports unsatisfied RF constraints due to live node/zone shortages.
+- Config compatibility:
+  - `PrimaryBalancingEnabled` / `MaxConcurrentPrimaryTransfers` are preferred post-Raft controls.
+  - `LeaderBalancingEnabled` / `MaxConcurrentLeaderMoves` remain supported as compatibility aliases.
 
 ### Dependencies
 **Internal modules:**
@@ -60,9 +63,6 @@ Computes per-round replica and leader balancing actions from cluster placement s
 
 ### Risks and Notes
 - Planner assumes caller supplies accurate `NodeLoad`/`TabletPlacement`; stale inputs can produce suboptimal actions.
-- Leader movement is heuristic and does not consult raft term/lease details.
+- Primary transfer planning is heuristic and does not run term/lease arbitration; callers must enforce execution safety.
 
 Changes:
-
-- Redefine balancer objectives after Raft removal, including whether RF-based add/remove actions remain supported.
-- Remove or replace leader-move planning with post-Raft shard ownership distribution rules.

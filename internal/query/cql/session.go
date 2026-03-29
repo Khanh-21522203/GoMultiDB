@@ -161,13 +161,21 @@ func (m *SessionManager) Prepare(ctx context.Context, connID, query string) (Pre
 }
 
 func (m *SessionManager) ExecutePrepared(ctx context.Context, connID, stmtID string, _ []any) (Response, error) {
+	_, err := m.ResolvePrepared(ctx, connID, stmtID)
+	if err != nil {
+		return Response{}, err
+	}
+	return Response{Applied: true, Rows: 0}, nil
+}
+
+func (m *SessionManager) ResolvePrepared(ctx context.Context, connID, stmtID string) (PreparedStmt, error) {
 	select {
 	case <-ctx.Done():
-		return Response{}, ctx.Err()
+		return PreparedStmt{}, ctx.Err()
 	default:
 	}
 	if connID == "" || stmtID == "" {
-		return Response{}, dberrors.New(dberrors.ErrInvalidArgument, "connection id and statement id are required", false, nil)
+		return PreparedStmt{}, dberrors.New(dberrors.ErrInvalidArgument, "connection id and statement id are required", false, nil)
 	}
 
 	m.mu.RLock()
@@ -175,21 +183,21 @@ func (m *SessionManager) ExecutePrepared(ctx context.Context, connID, stmtID str
 	if !ok {
 		m.mu.RUnlock()
 		m.incPreparedMiss()
-		return Response{}, dberrors.New(dberrors.ErrInvalidArgument, "session not found", false, nil)
+		return PreparedStmt{}, dberrors.New(dberrors.ErrInvalidArgument, "session not found", false, nil)
 	}
 	stmt, ok := s.Prepared[stmtID]
 	schemaVer := s.SchemaVer
 	m.mu.RUnlock()
 	if !ok {
 		m.incPreparedMiss()
-		return Response{}, dberrors.New(dberrors.ErrInvalidArgument, "prepared statement not found", false, nil)
+		return PreparedStmt{}, dberrors.New(dberrors.ErrInvalidArgument, "prepared statement not found", false, nil)
 	}
 	if stmt.SchemaVer != schemaVer {
 		m.incPreparedMiss()
-		return Response{}, dberrors.New(dberrors.ErrConflict, "prepared statement invalid due to schema change", true, nil)
+		return PreparedStmt{}, dberrors.New(dberrors.ErrConflict, "prepared statement invalid due to schema change", true, nil)
 	}
 	m.incPreparedHit()
-	return Response{Applied: true, Rows: 0}, nil
+	return stmt, nil
 }
 
 func (m *SessionManager) InvalidatePreparedOnSchemaChange(ctx context.Context, connID string, newSchemaVer uint64) error {

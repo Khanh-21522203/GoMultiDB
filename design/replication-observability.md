@@ -15,11 +15,13 @@ Provides metrics and health registry APIs plus HTTP admin endpoints (`/metrics`,
 ### Primary User Flow
 1. Component registers metrics and health statuses.
 2. Component records values/histogram observations.
+2.1 Ownership transitions can be recorded as first-class replication observability events.
 3. Operator scrapes `/metrics` and inspects health/admin endpoints.
 4. Operator triggers drain/compaction/cancel hooks via handler endpoints.
 
 ### System Flow
 1. Registry stores metric descriptors and labeled values in memory.
+1.1 `RecordPrimaryOwnershipTransition` increments `replication_primary_ownership_transition_total` and updates `primary_ownership` health state.
 2. Histogram registration creates fixed upper-bound bucket arrays.
 3. `MetricsHandler` renders Prometheus text format from gauge/counter snapshots and histogram cumulative buckets.
 4. `VarzHandler` and `RPCzHandler` serialize health snapshots.
@@ -37,6 +39,7 @@ Provides metrics and health registry APIs plus HTTP admin endpoints (`/metrics`,
 ### Interfaces and Contracts
 - Metric contracts:
   - `RegisterMetric`, `RecordMetric`, `Snapshot`.
+  - `RecordPrimaryOwnershipTransition` for post-Raft ownership-change instrumentation.
   - `RegisterHistogram`, `ObserveHistogram`, `HistogramSnapshot`.
 - Health contracts:
   - `SetHealth`, `Healthz`.
@@ -63,6 +66,7 @@ Provides metrics and health registry APIs plus HTTP admin endpoints (`/metrics`,
 - This package is the observability surface itself.
 - Debug points:
   - `registry.go:RegisterMetric/RecordMetric`
+  - `registry.go:RecordPrimaryOwnershipTransition`
   - `admin.go:MetricsHandler`
 - Coverage:
   - `registry_test.go`
@@ -73,6 +77,3 @@ Provides metrics and health registry APIs plus HTTP admin endpoints (`/metrics`,
 - Registry has no retention policy; metric cardinality growth is caller-controlled.
 
 Changes:
-
-- Update observability outputs to reflect post-Raft primary ownership transitions instead of Raft-oriented leader assumptions.
-- Remove or adapt replication admin/metric surfaces that become obsolete if CDC/xCluster scope is reduced.

@@ -206,10 +206,15 @@ func NewManager(store CatalogStore) (*Manager, error) {
 	}, nil
 }
 
-func (m *Manager) SetLeader(isLeader bool) {
+func (m *Manager) SetPrimary(isPrimary bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.isLeader = isLeader
+	m.isLeader = isPrimary
+}
+
+// SetLeader is retained for backwards compatibility.
+func (m *Manager) SetLeader(isLeader bool) {
+	m.SetPrimary(isLeader)
 }
 
 func (m *Manager) SetReconcileSink(sink ReconcileSink) {

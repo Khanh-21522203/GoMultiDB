@@ -204,10 +204,19 @@ func (l *Listener) handleFrame(ctx context.Context, codec *Codec, connID string,
 			break
 		}
 
+		vars := make([]any, 0)
+		if queryReq.QueryParams != nil && len(queryReq.QueryParams.Values) > 0 {
+			vars = make([]any, len(queryReq.QueryParams.Values))
+			for i, v := range queryReq.QueryParams.Values {
+				vars[i] = v
+			}
+		}
+
 		// Route to server.
 		cqlReq := Request{
 			ConnID: connID,
 			Query:  queryReq.Query,
+			Vars:   vars,
 		}
 		cqlResp, err := l.server.Route(ctx, cqlReq)
 		if err != nil {
@@ -316,8 +325,24 @@ func (l *Listener) handleFrame(ctx context.Context, codec *Codec, connID string,
 		return resp
 
 	case OpcodeBatch:
-		// Parse batch.
-		// For simplicity, just acknowledge.
+		batch := &BatchRequest{}
+		if err := batch.Unmarshal(codec, frame.Body); err != nil {
+			errCode = 0x1000
+			errMsg = err.Error()
+			break
+		}
+		_, err := l.server.RouteBatch(ctx, map[string]any{
+			"conn_id": connID,
+			"queries": batch.Queries,
+		})
+		if err != nil {
+			n := dberrors.NormalizeError(err)
+			errCode = 0x1000
+			errMsg = n.Message
+			break
+		}
+
+		// Batch returns VOID on success.
 		result := &ResultResponse{Kind: ResultKindVoid}
 		buf := &bytes.Buffer{}
 		_ = result.Marshal(codec, buf)
@@ -326,11 +351,18 @@ func (l *Listener) handleFrame(ctx context.Context, codec *Codec, connID string,
 		return resp
 
 	case OpcodeRegister:
-		// Register for events (stub: no-op).
-		resp.Opcode = OpcodeReady
-		resp.Body = []byte{}
-		resp.Length = 0
-		return resp
+		reg := &RegisterRequest{}
+		if err := reg.Unmarshal(codec, frame.Body); err != nil {
+			errCode = 0x1000
+			errMsg = err.Error()
+			break
+		}
+		errCode = 0x1000
+		errMsg = "REGISTER/event subscriptions are not supported"
+
+	case OpcodeAuthenticate, OpcodeAuthChallenge, OpcodeAuthResponse, OpcodeAuthSuccess:
+		errCode = 0x1000
+		errMsg = fmt.Sprintf("authentication opcode %d is not supported", frame.Opcode)
 
 	default:
 		errCode = 0x1000

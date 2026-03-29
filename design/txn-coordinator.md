@@ -30,6 +30,10 @@ Owns distributed transaction record lifecycle, conflict resolution policy agains
    - higher-priority blocker -> caller conflict
    - wait-queue mode -> retryable wait signal
 6. `waitq.DeadlockDetector` periodically scans wait graph cycles and aborts deterministic victim.
+7. Post-Raft failure semantics:
+   - commit intent-apply failure transitions the txn to `Aborted` and returns retryable unavailable.
+   - abort intent-removal failure returns retryable unavailable and leaves caller to retry abort.
+   - stale pending/completing txns are force-aborted via timeout expiry.
 
 ### Data Model
 - `txn.Record`:
@@ -51,6 +55,9 @@ Owns distributed transaction record lifecycle, conflict resolution policy agains
 - Wait queue contracts:
   - `Enqueue(waiter, blocker)` returns signal channel.
   - `Release(txnID)` unblocks waiters and removes txn edges.
+- Cross-shard support decision:
+  - supported within a live coordinator process by accumulating `InvolvedTablets`.
+  - not restart-durable because coordinator state is in-memory.
 
 ### Dependencies
 **Internal modules:**
@@ -80,8 +87,6 @@ Owns distributed transaction record lifecycle, conflict resolution policy agains
 ### Risks and Notes
 - Txn manager state is process-local; restart persistence and distributed ownership are not implemented in this package.
 - Wait mode in conflict resolver is represented as retryable unavailable signal and requires higher-level orchestration to block/retry correctly.
+- Atomicity guarantees are process-local (idempotent + intent-apply loop) and are not consensus-replicated guarantees.
 
 Changes:
-
-- Redefine transaction atomicity and failure guarantees after Raft removal, including clear post-failure commit/abort behavior.
-- Decide and document whether cross-shard distributed transactions remain supported in the simplified architecture.

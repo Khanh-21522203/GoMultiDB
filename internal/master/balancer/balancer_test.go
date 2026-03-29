@@ -123,9 +123,9 @@ func TestPlanOverReplicated(t *testing.T) {
 	if got := countType(actions, "remove_replica"); got != 1 {
 		t.Fatalf("expected 1 remove_replica, got %d: %+v", got, actions)
 	}
-	// Should remove from a non-leader (n2 or n3); never from the leader.
+	// Should remove from a non-primary replica (n2 or n3); never from the primary.
 	if actions[0].FromNode == "n1" {
-		t.Fatalf("should not remove leader replica, got FromNode=%s", actions[0].FromNode)
+		t.Fatalf("should not remove primary replica, got FromNode=%s", actions[0].FromNode)
 	}
 }
 
@@ -253,10 +253,10 @@ func TestMaxConcurrentAddsEnforced(t *testing.T) {
 	}
 }
 
-// ── leader balancing ──────────────────────────────────────────────────────────
+// ── primary balancing ─────────────────────────────────────────────────────────
 
-func TestLeaderBalancing(t *testing.T) {
-	// n1 has 3 leaders, n2 has 0 — should move one leader.
+func TestPrimaryBalancingTransfer(t *testing.T) {
+	// n1 has 3 primaries, n2 has 0 — should transfer one primary.
 	state := balancer.ClusterState{
 		Nodes: []balancer.NodeLoad{
 			node("n1", 3, 3, true, "zone-a"),
@@ -270,15 +270,38 @@ func TestLeaderBalancing(t *testing.T) {
 		},
 	}
 	p := newPlanner(balancer.Config{
-		LeaderBalancingEnabled: true,
+		PrimaryBalancingEnabled: true,
+		CooldownWindow:          0,
+	})
+	actions, _ := p.PlanBalanceRound(state)
+	if got := countType(actions, "transfer_primary"); got != 1 {
+		t.Fatalf("expected 1 transfer_primary, got %d: %+v", got, actions)
+	}
+	if actions[0].FromNode != "n1" || actions[0].ToNode != "n2" {
+		t.Fatalf("expected transfer_primary n1→n2, got %s→%s", actions[0].FromNode, actions[0].ToNode)
+	}
+}
+
+func TestDeprecatedLeaderBalancingConfigStillWorks(t *testing.T) {
+	state := balancer.ClusterState{
+		Nodes: []balancer.NodeLoad{
+			node("n1", 2, 2, true, "zone-a"),
+			node("n2", 2, 0, true, "zone-b"),
+		},
+		Tablets: []balancer.TabletPlacement{
+			tablet("tab-compat", 2,
+				replica("n1", true),
+				replica("n2", false),
+			),
+		},
+	}
+	p := newPlanner(balancer.Config{
+		LeaderBalancingEnabled: true, // deprecated
 		CooldownWindow:         0,
 	})
 	actions, _ := p.PlanBalanceRound(state)
-	if got := countType(actions, "move_leader"); got != 1 {
-		t.Fatalf("expected 1 move_leader, got %d: %+v", got, actions)
-	}
-	if actions[0].FromNode != "n1" || actions[0].ToNode != "n2" {
-		t.Fatalf("expected move_leader n1→n2, got %s→%s", actions[0].FromNode, actions[0].ToNode)
+	if got := countType(actions, "transfer_primary"); got != 1 {
+		t.Fatalf("expected transfer_primary from deprecated config, got %d: %+v", got, actions)
 	}
 }
 

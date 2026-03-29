@@ -49,14 +49,14 @@ func (d *recordingDispatcher) TabletRead(_ context.Context, _, _ string, op pgga
 }
 
 type recordingCoordinator struct {
-	beginCalls     atomic.Int32
-	commitCalls    atomic.Int32
-	abortCalls     atomic.Int32
-	beginErr       error
-	commitErr      error
-	abortErr       error
-	lastCommitTxn  ids.TxnID
-	lastAbortTxn   ids.TxnID
+	beginCalls    atomic.Int32
+	commitCalls   atomic.Int32
+	abortCalls    atomic.Int32
+	beginErr      error
+	commitErr     error
+	abortErr      error
+	lastCommitTxn ids.TxnID
+	lastAbortTxn  ids.TxnID
 }
 
 func (c *recordingCoordinator) Begin(_ context.Context, _ ids.RequestID) (ids.TxnID, uint64, error) {
@@ -294,29 +294,48 @@ func TestCommitAndAbortUseDecodedTxnID(t *testing.T) {
 	}
 }
 
-// ── stub fallback (no dispatcher injected) ────────────────────────────────────
+// ── default local bridge behavior ────────────────────────────────────────────
 
-func TestStubFallbackNoDispatcher(t *testing.T) {
+func TestDefaultBridgeNoInjection(t *testing.T) {
 	m := pggate.NewManager()
 	sessionID, _ := m.OpenSession(context.Background(), ids.MustNewRequestID())
 	ctx := context.Background()
 
-	// Without dispatcher, FlushWrites returns ops in-memory.
-	_ = m.QueueWrite(ctx, sessionID, pggate.WriteOp{TableID: "t1", Operation: "INSERT"})
-	ops, err := m.FlushWrites(ctx, sessionID)
-	if err != nil {
-		t.Fatalf("stub FlushWrites: %v", err)
+	if _, err := m.ExecWrite(ctx, sessionID, pggate.WriteOp{TableID: "t1", Operation: "INSERT"}, true); err != nil {
+		t.Fatalf("default bridge ExecWrite flush: %v", err)
 	}
-	if len(ops) != 1 {
-		t.Fatalf("expected 1 op from stub, got %d", len(ops))
-	}
-
-	// ExecRead returns stub row count.
 	resp, err := m.ExecRead(ctx, sessionID, pggate.ReadOp{TableID: "t1", FetchSize: 5})
 	if err != nil {
-		t.Fatalf("stub ExecRead: %v", err)
+		t.Fatalf("default bridge ExecRead: %v", err)
 	}
-	if resp.Rows != 5 {
-		t.Fatalf("expected stub rows=5, got %d", resp.Rows)
+	if resp.Rows != 1 {
+		t.Fatalf("expected one visible row after one insert, got %d", resp.Rows)
+	}
+}
+
+func TestBridgeMissingReturnsRetryableUnavailable(t *testing.T) {
+	m := pggate.NewManager()
+	m.SetTabletDispatcher(nil)
+	m.SetPartitionResolver(nil)
+	sessionID, _ := m.OpenSession(context.Background(), ids.MustNewRequestID())
+	ctx := context.Background()
+
+	_ = m.QueueWrite(ctx, sessionID, pggate.WriteOp{TableID: "t1", Operation: "INSERT"})
+	_, err := m.FlushWrites(ctx, sessionID)
+	if err == nil {
+		t.Fatalf("expected missing bridge error from FlushWrites")
+	}
+	n := dberrors.NormalizeError(err)
+	if n.Code != dberrors.ErrRetryableUnavailable {
+		t.Fatalf("expected retryable unavailable, got %s", n.Code)
+	}
+
+	_, err = m.ExecRead(ctx, sessionID, pggate.ReadOp{TableID: "t1", FetchSize: 5})
+	if err == nil {
+		t.Fatalf("expected missing bridge error from ExecRead")
+	}
+	n = dberrors.NormalizeError(err)
+	if n.Code != dberrors.ErrRetryableUnavailable {
+		t.Fatalf("expected retryable unavailable, got %s", n.Code)
 	}
 }

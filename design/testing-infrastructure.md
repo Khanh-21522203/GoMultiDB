@@ -47,6 +47,7 @@ Provides reusable in-process testing harnesses plus integration/stress suites th
 
 ### Interfaces and Contracts
 - Invariant dispatch API: `AssertInvariant(name, inspector, opts...)` supports `no_lost_writes`, `replica_convergence`, `no_uncommitted_intents`, `no_double_apply`.
+- Invariant dispatch API: `AssertInvariant(name, inspector, opts...)` supports `no_lost_writes`, `ownership_convergence`, `routing_consistency`, `durability_no_pending_intents`, `durability_no_double_apply` (legacy names remain aliases for compatibility).
 - Workload contract: target must implement `Read(ctx,tableID)` and `Write(ctx,tableID)`.
 - Integration/stress suites are build-tag gated:
   - `//go:build integration` for infra suite.
@@ -70,12 +71,11 @@ Provides reusable in-process testing harnesses plus integration/stress suites th
   - `tests/integration/infra/infra_integration_test.go`
   - `tests/stress/scenarios_test.go`
   - `internal/testing/*` helper package entry points.
+- Primary ownership transfer/restart regression:
+  - `internal/server/phase5_failover_smoke_test.go:TestPhase5PrimaryOwnershipTransferRecovery`.
 
 ### Risks and Notes
 - Compose-backed suites depend on local Docker availability and can fail for environment reasons unrelated to code logic.
 - Artifact files in repo are snapshots from prior runs and may not reflect current HEAD behavior.
 
 Changes:
-
-- Replace Raft/replica-centric invariants with post-Raft ownership, routing, and durability invariants.
-- Add regression scenarios for primary ownership transfer/restart behavior in the simplified leader-cluster model.

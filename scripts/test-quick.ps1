@@ -4,7 +4,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$cmd = "go test ./internal/replication/cdc ./internal/replication/xcluster"
+$cmd = "go test ./internal/master/balancer ./internal/testing/invariant ./internal/replication/cdc ./internal/replication/xcluster ./internal/server"
 if ($VerboseOutput) {
   $cmd = "$cmd -v"
 }

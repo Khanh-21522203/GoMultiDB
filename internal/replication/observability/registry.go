@@ -195,6 +195,40 @@ func (r *Registry) SetHealth(ctx context.Context, hs HealthStatus) error {
 	return nil
 }
 
+// RecordPrimaryOwnershipTransition records an ownership transfer event used by
+// post-Raft observability surfaces.
+func (r *Registry) RecordPrimaryOwnershipTransition(ctx context.Context, streamID, tabletID, fromNode, toNode string, epoch uint64) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	if streamID == "" || tabletID == "" || toNode == "" {
+		return fmt.Errorf("stream id, tablet id, and destination owner are required")
+	}
+
+	const metricName = "replication_primary_ownership_transition_total"
+	if err := r.RegisterMetric(ctx, MetricDescriptor{
+		Name: metricName,
+		Type: "counter",
+		Help: "Primary ownership transitions by stream/tablet/source/destination",
+	}); err != nil {
+		return err
+	}
+
+	labels := fmt.Sprintf("stream=%s,tablet=%s,from=%s,to=%s,epoch=%d", streamID, tabletID, fromNode, toNode, epoch)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	k := metricKey{Name: metricName, Labels: labels}
+	r.values[k] = r.values[k] + 1
+	r.health["primary_ownership"] = HealthStatus{
+		Component: "primary_ownership",
+		Healthy:   true,
+		Details:   fmt.Sprintf("stream=%s tablet=%s owner=%s epoch=%d", streamID, tabletID, toNode, epoch),
+	}
+	return nil
+}
+
 func (r *Registry) Healthz(ctx context.Context) ([]HealthStatus, error) {
 	select {
 	case <-ctx.Done():

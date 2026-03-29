@@ -111,3 +111,45 @@ func TestMemoryReconcileSinkPrimaryDeterministicBySeqAndTSUUID(t *testing.T) {
 		t.Fatalf("expected highest-seq primary ts-b, got %s", v.PrimaryTSUUID)
 	}
 }
+
+func TestMemoryReconcileSinkOwnershipTransferPrepareCommit(t *testing.T) {
+	sink := NewMemoryReconcileSink()
+	if err := sink.ApplyTabletReport(context.Background(), TabletReportDelta{
+		TSUUID:     "ts-1",
+		SequenceNo: 1,
+		Updated:    []string{"tablet-transfer"},
+	}); err != nil {
+		t.Fatalf("seed report: %v", err)
+	}
+
+	prepared, err := sink.PrepareOwnershipTransfer(context.Background(), "tablet-transfer", "ts-2")
+	if err != nil {
+		t.Fatalf("prepare transfer: %v", err)
+	}
+	if prepared.TransferState != TransferStatePrepared {
+		t.Fatalf("expected transfer prepared state, got %s", prepared.TransferState)
+	}
+	if prepared.PendingPrimaryTSUUID != "ts-2" {
+		t.Fatalf("expected pending primary ts-2, got %s", prepared.PendingPrimaryTSUUID)
+	}
+	if prepared.TransferEpoch != prepared.OwnerEpoch+1 {
+		t.Fatalf("expected transfer epoch owner+1, got owner=%d transfer=%d", prepared.OwnerEpoch, prepared.TransferEpoch)
+	}
+
+	committed, err := sink.CommitOwnershipTransfer(context.Background(), "tablet-transfer", prepared.TransferEpoch)
+	if err != nil {
+		t.Fatalf("commit transfer: %v", err)
+	}
+	if committed.PrimaryTSUUID != "ts-2" {
+		t.Fatalf("expected committed primary ts-2, got %s", committed.PrimaryTSUUID)
+	}
+	if committed.OwnerEpoch != prepared.TransferEpoch {
+		t.Fatalf("expected owner epoch to match committed transfer epoch, got %d", committed.OwnerEpoch)
+	}
+	if committed.TransferState != TransferStateNone {
+		t.Fatalf("expected transfer state NONE after commit, got %s", committed.TransferState)
+	}
+	if committed.PendingPrimaryTSUUID != "" {
+		t.Fatalf("expected cleared pending primary after commit")
+	}
+}

@@ -25,8 +25,12 @@ Bootstraps `master` and `tserver` processes, wires core services into `server.Ru
 2. Both create `rpc.Server` via `internal/rpc/server.go:NewServer` and register `ping`.
 3. `master` additionally wires `catalog.Manager`, `heartbeat.Service`, `registry.TabletRPCRegistry`, and `snapshot.Service`.
 4. `tserver` wires `tablet/snapshot.Service`.
-5. Both call `internal/server/runtime.go:NewRuntime` or `NewRuntimeWithTabletRPC`, then `Init` and `Start`.
-6. `Runtime.Start` starts RPC server first, then SQL coordinator, then CQL server; `Runtime.Stop` reverses that order.
+5. `master` explicitly sets local primary ownership (`catalogMgr.SetPrimary(true)`, `heartbeatSvc.SetPrimary(true)`) before runtime start.
+6. Both call `internal/server/runtime.go:NewRuntime` or `NewRuntimeWithTabletRPC`, then `Init` and `Start`.
+7. Startup boundary order:
+   - control-plane service wiring + registration first (master/tserver main),
+   - runtime listeners second (`Runtime.Start`: RPC -> SQL -> CQL).
+8. `Runtime.Stop` reverses query-listener order then stops RPC.
 
 ```
 master/tserver main
@@ -91,6 +95,3 @@ master/tserver main
 - `SQL` integration in runtime uses local coordinator abstraction, while real `PGProcess` remains a separate component.
 
 Changes:
-
-- Remove Raft-specific startup/dependency wiring from runtime bootstrap and replace with a simplified leader-cluster bootstrap model.
-- Update runtime query and control-plane startup order to match the post-Raft architecture boundaries.

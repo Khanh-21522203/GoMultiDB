@@ -10,10 +10,10 @@ import (
 
 // stubInspector is a controllable ClusterInspector for tests.
 type stubInspector struct {
-	store        map[string][]byte
-	replicaStates []invariant.TabletReplicaState
+	store          map[string][]byte
+	replicaStates  []invariant.TabletReplicaState
 	pendingIntents []string
-	appliedOps   map[string]map[uint64]int
+	appliedOps     map[string]map[uint64]int
 }
 
 func newStub() *stubInspector {
@@ -78,76 +78,114 @@ func TestAssertNoLostWritesMissingKey(t *testing.T) {
 	}
 }
 
-// ── replica_convergence ────────────────────────────────────────────────────────
+// ── ownership_convergence ──────────────────────────────────────────────────────
 
-func TestAssertReplicaConvergencePass(t *testing.T) {
+func TestAssertOwnershipConvergencePass(t *testing.T) {
 	insp := newStub()
 	now := time.Now()
 	insp.replicaStates = []invariant.TabletReplicaState{
-		{NodeID: "n1", TabletID: "tab-1", LastOpID: 100, Timestamp: now},
-		{NodeID: "n2", TabletID: "tab-1", LastOpID: 100, Timestamp: now},
+		{NodeID: "n1", TabletID: "tab-1", LastOpID: 100, Timestamp: now, IsPrimary: true},
+		{NodeID: "n2", TabletID: "tab-1", LastOpID: 100, Timestamp: now, IsPrimary: false},
 	}
-	if err := invariant.AssertReplicaConvergence(insp, 5*time.Second); err != nil {
+	if err := invariant.AssertOwnershipConvergence(insp, 5*time.Second); err != nil {
 		t.Fatalf("expected convergence: %v", err)
 	}
 }
 
-func TestAssertReplicaConvergenceStaleLag(t *testing.T) {
+func TestAssertOwnershipConvergenceStaleLag(t *testing.T) {
 	insp := newStub()
 	old := time.Now().Add(-10 * time.Second) // older than tolerance
 	insp.replicaStates = []invariant.TabletReplicaState{
-		{NodeID: "n1", TabletID: "tab-1", LastOpID: 100, Timestamp: time.Now()},
-		{NodeID: "n2", TabletID: "tab-1", LastOpID: 90, Timestamp: old},
+		{NodeID: "n1", TabletID: "tab-1", LastOpID: 100, Timestamp: time.Now(), IsPrimary: true},
+		{NodeID: "n2", TabletID: "tab-1", LastOpID: 90, Timestamp: old, IsPrimary: false},
 	}
-	if err := invariant.AssertReplicaConvergence(insp, 5*time.Second); err == nil {
+	if err := invariant.AssertOwnershipConvergence(insp, 5*time.Second); err == nil {
 		t.Fatalf("expected convergence failure for stale lagging replica")
 	}
 }
 
-func TestAssertReplicaConvergenceRecentLag(t *testing.T) {
+func TestAssertOwnershipConvergenceRecentLag(t *testing.T) {
 	insp := newStub()
 	recent := time.Now().Add(-1 * time.Second) // within tolerance
 	insp.replicaStates = []invariant.TabletReplicaState{
-		{NodeID: "n1", TabletID: "tab-1", LastOpID: 100, Timestamp: time.Now()},
-		{NodeID: "n2", TabletID: "tab-1", LastOpID: 90, Timestamp: recent},
+		{NodeID: "n1", TabletID: "tab-1", LastOpID: 100, Timestamp: time.Now(), IsPrimary: true},
+		{NodeID: "n2", TabletID: "tab-1", LastOpID: 90, Timestamp: recent, IsPrimary: false},
 	}
 	// Within tolerance → should pass.
-	if err := invariant.AssertReplicaConvergence(insp, 5*time.Second); err != nil {
+	if err := invariant.AssertOwnershipConvergence(insp, 5*time.Second); err != nil {
 		t.Fatalf("recent lag within tolerance should pass: %v", err)
 	}
 }
 
-// ── no_uncommitted_intents ─────────────────────────────────────────────────────
-
-func TestAssertNoUncommittedIntentsPass(t *testing.T) {
+func TestAssertOwnershipConvergenceRequiresSinglePrimary(t *testing.T) {
 	insp := newStub()
-	if err := invariant.AssertNoUncommittedIntents(insp); err != nil {
+	now := time.Now()
+	insp.replicaStates = []invariant.TabletReplicaState{
+		{NodeID: "n1", TabletID: "tab-1", LastOpID: 100, Timestamp: now, IsPrimary: true},
+		{NodeID: "n2", TabletID: "tab-1", LastOpID: 100, Timestamp: now, IsPrimary: true},
+	}
+	if err := invariant.AssertOwnershipConvergence(insp, 5*time.Second); err == nil {
+		t.Fatalf("expected failure when multiple primaries are present")
+	}
+}
+
+// ── routing_consistency ───────────────────────────────────────────────────────
+
+func TestAssertRoutingConsistencyPass(t *testing.T) {
+	insp := newStub()
+	now := time.Now()
+	insp.replicaStates = []invariant.TabletReplicaState{
+		{NodeID: "n1", TabletID: "tab-1", LastOpID: 10, Timestamp: now, IsPrimary: true},
+		{NodeID: "n2", TabletID: "tab-1", LastOpID: 10, Timestamp: now, IsPrimary: false},
+	}
+	if err := invariant.AssertRoutingConsistency(insp, 3*time.Second); err != nil {
+		t.Fatalf("expected routing consistency pass: %v", err)
+	}
+}
+
+func TestAssertRoutingConsistencyFailsOnStalePrimary(t *testing.T) {
+	insp := newStub()
+	old := time.Now().Add(-15 * time.Second)
+	insp.replicaStates = []invariant.TabletReplicaState{
+		{NodeID: "n1", TabletID: "tab-1", LastOpID: 10, Timestamp: old, IsPrimary: true},
+		{NodeID: "n2", TabletID: "tab-1", LastOpID: 10, Timestamp: time.Now(), IsPrimary: false},
+	}
+	if err := invariant.AssertRoutingConsistency(insp, 2*time.Second); err == nil {
+		t.Fatalf("expected stale primary routing failure")
+	}
+}
+
+// ── durability_no_pending_intents ─────────────────────────────────────────────
+
+func TestAssertDurabilityNoPendingIntentsPass(t *testing.T) {
+	insp := newStub()
+	if err := invariant.AssertDurabilityNoPendingIntents(insp); err != nil {
 		t.Fatalf("expected no intents: %v", err)
 	}
 }
 
-func TestAssertNoUncommittedIntentsFail(t *testing.T) {
+func TestAssertDurabilityNoPendingIntentsFail(t *testing.T) {
 	insp := newStub()
 	insp.pendingIntents = []string{"txn-abc"}
-	if err := invariant.AssertNoUncommittedIntents(insp); err == nil {
+	if err := invariant.AssertDurabilityNoPendingIntents(insp); err == nil {
 		t.Fatalf("expected failure with pending intents")
 	}
 }
 
-// ── no_double_apply ────────────────────────────────────────────────────────────
+// ── durability_no_double_apply ────────────────────────────────────────────────
 
-func TestAssertNoDoubleApplyPass(t *testing.T) {
+func TestAssertDurabilityNoDoubleApplyPass(t *testing.T) {
 	insp := newStub()
 	insp.appliedOps["node-1"] = map[uint64]int{1: 1, 2: 1, 3: 1}
-	if err := invariant.AssertNoDoubleApply([]string{"node-1"}, insp); err != nil {
+	if err := invariant.AssertDurabilityNoDoubleApply([]string{"node-1"}, insp); err != nil {
 		t.Fatalf("expected no double apply: %v", err)
 	}
 }
 
-func TestAssertNoDoubleApplyFail(t *testing.T) {
+func TestAssertDurabilityNoDoubleApplyFail(t *testing.T) {
 	insp := newStub()
 	insp.appliedOps["node-1"] = map[uint64]int{1: 1, 2: 2} // opID 2 applied twice
-	if err := invariant.AssertNoDoubleApply([]string{"node-1"}, insp); err == nil {
+	if err := invariant.AssertDurabilityNoDoubleApply([]string{"node-1"}, insp); err == nil {
 		t.Fatalf("expected double-apply failure")
 	}
 }
@@ -161,13 +199,13 @@ func TestAssertInvariantUnknown(t *testing.T) {
 	}
 }
 
-func TestAssertInvariantReplicaConvergence(t *testing.T) {
+func TestAssertInvariantOwnershipConvergence(t *testing.T) {
 	insp := newStub()
 	now := time.Now()
 	insp.replicaStates = []invariant.TabletReplicaState{
-		{NodeID: "n1", TabletID: "t1", LastOpID: 5, Timestamp: now},
+		{NodeID: "n1", TabletID: "t1", LastOpID: 5, Timestamp: now, IsPrimary: true},
 	}
-	if err := invariant.AssertInvariant("replica_convergence", insp); err != nil {
+	if err := invariant.AssertInvariant("ownership_convergence", insp); err != nil {
 		t.Fatalf("single replica should converge: %v", err)
 	}
 }

@@ -2,6 +2,7 @@ package cql
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	dberrors "GoMultiDB/internal/common/errors"
@@ -45,12 +46,17 @@ type LocalServer struct {
 	started     bool
 	cfg         Config
 	sessions    *SessionManager
+	executor    *executionEngine
 	activeConns map[string]struct{}
 	listener    *Listener
 }
 
 func NewLocalServer() *LocalServer {
-	s := &LocalServer{sessions: NewSessionManager(), activeConns: make(map[string]struct{})}
+	s := &LocalServer{
+		sessions:    NewSessionManager(),
+		executor:    newExecutionEngine(),
+		activeConns: make(map[string]struct{}),
+	}
 	s.listener = NewListener(s)
 	return s
 }
@@ -102,6 +108,7 @@ func (s *LocalServer) Stop(ctx context.Context) error {
 	s.started = false
 	s.cfg = Config{}
 	s.sessions = NewSessionManager()
+	s.executor = newExecutionEngine()
 	s.activeConns = make(map[string]struct{})
 	return nil
 }
@@ -209,7 +216,11 @@ func (s *LocalServer) Route(ctx context.Context, req Request) (Response, error) 
 		if err := s.OpenConnection(ctx, req.ConnID); err != nil {
 			return Response{}, err
 		}
-		return s.sessions.ExecutePrepared(ctx, req.ConnID, req.PreparedID, req.Vars)
+		stmt, err := s.sessions.ResolvePrepared(ctx, req.ConnID, req.PreparedID)
+		if err != nil {
+			return Response{}, err
+		}
+		return s.executor.Execute(ctx, stmt.Query, req.Vars)
 	}
 
 	if req.Query == "" {
@@ -220,7 +231,7 @@ func (s *LocalServer) Route(ctx context.Context, req Request) (Response, error) 
 			return Response{}, err
 		}
 	}
-	return Response{Applied: true, Rows: 0}, nil
+	return s.executor.Execute(ctx, req.Query, req.Vars)
 }
 
 func (s *LocalServer) RouteBatch(ctx context.Context, reqAny any) (Response, error) {
@@ -232,6 +243,78 @@ func (s *LocalServer) RouteBatch(ctx context.Context, reqAny any) (Response, err
 	if err := s.Health(ctx); err != nil {
 		return Response{}, err
 	}
-	// For now, just acknowledge batch requests.
-	return Response{Applied: true, Rows: 0}, nil
+	requests, err := normalizeBatchRequests(reqAny)
+	if err != nil {
+		return Response{}, err
+	}
+	totalRows := 0
+	for _, req := range requests {
+		resp, routeErr := s.Route(ctx, req)
+		if routeErr != nil {
+			return Response{}, routeErr
+		}
+		totalRows += resp.Rows
+	}
+	return Response{Applied: true, Rows: totalRows}, nil
+}
+
+func normalizeBatchRequests(reqAny any) ([]Request, error) {
+	switch req := reqAny.(type) {
+	case map[string]any:
+		connID, _ := req["conn_id"].(string)
+
+		if statements, ok := req["statements"].([]Request); ok {
+			out := make([]Request, 0, len(statements))
+			for _, st := range statements {
+				if st.ConnID == "" {
+					st.ConnID = connID
+				}
+				out = append(out, st)
+			}
+			if len(out) == 0 {
+				return nil, dberrors.New(dberrors.ErrInvalidArgument, "batch statements are required", false, nil)
+			}
+			return out, nil
+		}
+
+		if queries, ok := req["queries"].([]BatchQuery); ok {
+			return convertBatchQueries(connID, queries)
+		}
+
+		return nil, dberrors.New(dberrors.ErrInvalidArgument, "batch request must provide statements or queries", false, nil)
+	case BatchRequest:
+		return convertBatchQueries("", req.Queries)
+	case []Request:
+		if len(req) == 0 {
+			return nil, dberrors.New(dberrors.ErrInvalidArgument, "batch statements are required", false, nil)
+		}
+		return req, nil
+	default:
+		return nil, dberrors.New(dberrors.ErrInvalidArgument, fmt.Sprintf("unsupported batch request type %T", reqAny), false, nil)
+	}
+}
+
+func convertBatchQueries(connID string, queries []BatchQuery) ([]Request, error) {
+	if len(queries) == 0 {
+		return nil, dberrors.New(dberrors.ErrInvalidArgument, "batch queries are required", false, nil)
+	}
+	out := make([]Request, 0, len(queries))
+	for _, q := range queries {
+		req := Request{ConnID: connID}
+		if q.Kind == 0 {
+			req.Query = q.QueryString
+		} else if q.Kind == 1 {
+			req.PreparedID = string(q.QueryID)
+		} else {
+			return nil, dberrors.New(dberrors.ErrInvalidArgument, "unsupported batch query kind", false, nil)
+		}
+		if len(q.Values) > 0 {
+			req.Vars = make([]any, len(q.Values))
+			for i, v := range q.Values {
+				req.Vars[i] = v
+			}
+		}
+		out = append(out, req)
+	}
+	return out, nil
 }

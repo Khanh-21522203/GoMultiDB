@@ -17,9 +17,14 @@ import (
 
 func main() {
 	var (
-		nodeID   = flag.String("node-id", "tserver-1", "node id")
-		rpcAddr  = flag.String("rpc-addr", "127.0.0.1:9100", "rpc bind address")
-		httpAddr = flag.String("http-addr", "127.0.0.1:9000", "http bind address")
+		nodeID             = flag.String("node-id", "tserver-1", "node id")
+		rpcAddr            = flag.String("rpc-addr", "127.0.0.1:9100", "rpc bind address")
+		httpAddr           = flag.String("http-addr", "127.0.0.1:9000", "http bind address")
+		enableSQLProcess   = flag.Bool("enable-sql-process", false, "enable managed postgres subprocess for SQL")
+		sqlProcessRequired = flag.Bool("sql-process-required", false, "do not fall back to local SQL coordinator when process mode fails")
+		sqlDataDir         = flag.String("sql-data-dir", "/var/lib/multidb/sql", "data directory for managed SQL subprocess")
+		sqlBinPath         = flag.String("sql-bin-path", "", "path to postgres binary for managed SQL subprocess")
+		sqlInitDBPath      = flag.String("sql-initdb-path", "", "path to initdb binary for managed SQL subprocess")
 	)
 	flag.Parse()
 
@@ -27,6 +32,11 @@ func main() {
 	cfg.NodeID = *nodeID
 	cfg.RPCBindAddress = *rpcAddr
 	cfg.HTTPBindAddress = *httpAddr
+	cfg.EnableSQLProcess = *enableSQLProcess
+	cfg.SQLAllowFallbackToCoordinator = !*sqlProcessRequired
+	cfg.SQLDataDir = *sqlDataDir
+	cfg.SQLProcessBinPath = *sqlBinPath
+	cfg.SQLProcessInitDBPath = *sqlInitDBPath
 
 	rpcServer, err := rpcpkg.NewServer(rpcpkg.Config{
 		BindAddress:         cfg.RPCBindAddress,

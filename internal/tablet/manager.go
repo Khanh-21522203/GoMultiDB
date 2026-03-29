@@ -3,6 +3,7 @@ package tablet
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	dberrors "GoMultiDB/internal/common/errors"
@@ -49,6 +50,14 @@ func (s State) String() string {
 }
 
 const AnyStateVersion uint64 = 0
+const AnyOwnerEpoch uint64 = 0
+
+type TransferState string
+
+const (
+	TransferStateNone     TransferState = "NONE"
+	TransferStatePrepared TransferState = "TRANSFER_PREPARED"
+)
 
 type Meta struct {
 	TabletID      string
@@ -56,6 +65,11 @@ type Meta struct {
 	Partition     partition.PartitionBound
 	SplitParentID string
 	SplitDepth    uint32
+	OwnerTSUUID   string
+	OwnerEpoch    uint64
+	TransferState TransferState
+	TransferEpoch uint64
+	PendingOwner  string
 	State         State
 	StateVersion  uint64
 }
@@ -102,6 +116,16 @@ func NewManagerWithFS(metaDir string) (*Manager, error) {
 
 	peers := make(map[string]*Peer, len(metas))
 	for _, meta := range metas {
+		normalizeOwnershipMeta(&meta)
+		if meta.TransferState == TransferStatePrepared {
+			// Transfer prepare is not durable across process crashes without a
+			// consensus log; require master to issue a fresh prepare.
+			meta.TransferState = TransferStateNone
+			meta.TransferEpoch = 0
+			meta.PendingOwner = ""
+			meta.StateVersion++
+			_ = store.WriteMeta(meta) // best-effort on recovery
+		}
 		switch meta.State {
 		case Deleted:
 			// Stale file; the tablet was already removed. Clean up.
@@ -179,6 +203,10 @@ func (m *Manager) CreateTablet(_ context.Context, meta Meta, _ string) error {
 
 	meta.State = Running
 	meta.StateVersion = 1
+	normalizeOwnershipMeta(&meta)
+	meta.TransferState = TransferStateNone
+	meta.TransferEpoch = 0
+	meta.PendingOwner = ""
 
 	// Write to disk before making the peer visible to the registry.
 	if err := m.store.WriteMeta(meta); err != nil {
@@ -284,6 +312,10 @@ func (m *Manager) SplitTabletWithExpectedStateVersion(_ context.Context, tabletI
 		m.mu.Unlock()
 		return "", "", dberrors.New(dberrors.ErrConflict, "tablet not in running state", true, nil)
 	}
+	if parent.Meta.TransferState == TransferStatePrepared {
+		m.mu.Unlock()
+		return "", "", dberrors.New(dberrors.ErrConflict, "tablet ownership transfer is in prepared state", true, nil)
+	}
 	if len(parent.Meta.Partition.EndKey) > 0 && string(splitKey) >= string(parent.Meta.Partition.EndKey) {
 		m.mu.Unlock()
 		return "", "", dberrors.New(dberrors.ErrInvalidArgument, "split key outside parent range", false, nil)
@@ -307,6 +339,9 @@ func (m *Manager) SplitTabletWithExpectedStateVersion(_ context.Context, tabletI
 		Partition:     partition.PartitionBound{StartKey: clone(parent.Meta.Partition.StartKey), EndKey: clone(splitKey)},
 		SplitParentID: tabletID,
 		SplitDepth:    parent.Meta.SplitDepth + 1,
+		OwnerTSUUID:   parent.Meta.OwnerTSUUID,
+		OwnerEpoch:    parent.Meta.OwnerEpoch,
+		TransferState: TransferStateNone,
 		State:         Running,
 		StateVersion:  1,
 	}
@@ -316,6 +351,9 @@ func (m *Manager) SplitTabletWithExpectedStateVersion(_ context.Context, tabletI
 		Partition:     partition.PartitionBound{StartKey: clone(splitKey), EndKey: clone(parent.Meta.Partition.EndKey)},
 		SplitParentID: tabletID,
 		SplitDepth:    parent.Meta.SplitDepth + 1,
+		OwnerTSUUID:   parent.Meta.OwnerTSUUID,
+		OwnerEpoch:    parent.Meta.OwnerEpoch,
+		TransferState: TransferStateNone,
 		State:         Running,
 		StateVersion:  1,
 	}
@@ -442,12 +480,119 @@ func (m *Manager) RemoteBootstrapTabletWithExpectedStateVersion(_ context.Contex
 	if err != nil {
 		return err
 	}
+	if strings.TrimSpace(runMeta.OwnerTSUUID) == "" {
+		runMeta.OwnerTSUUID = sourcePeer
+	}
+	if sourcePeer != "" && runMeta.OwnerTSUUID != sourcePeer {
+		runMeta.OwnerTSUUID = sourcePeer
+		runMeta.OwnerEpoch++
+	}
+	if runMeta.OwnerEpoch == 0 {
+		runMeta.OwnerEpoch = 1
+	}
+	runMeta.TransferState = TransferStateNone
+	runMeta.TransferEpoch = 0
+	runMeta.PendingOwner = ""
 	if err := m.store.WriteMeta(runMeta); err != nil {
 		return fmt.Errorf("tablet manager: persist running (after remote-bootstrap) %q: %w", tabletID, err)
 	}
 	applyMeta(p, runMeta)
 	p.LastError = ""
 	return nil
+}
+
+func (m *Manager) TransferPrepare(_ context.Context, tabletID, fromOwner, toOwner string, expectedOwnerEpoch, expectedStateVersion uint64) (Meta, error) {
+	if strings.TrimSpace(toOwner) == "" {
+		return Meta{}, dberrors.New(dberrors.ErrInvalidArgument, "target owner is required", false, nil)
+	}
+	if !m.beginOp(tabletID) {
+		return Meta{}, dberrors.New(dberrors.ErrConflict, "tablet operation in progress", true, nil)
+	}
+	defer m.endOp(tabletID)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	p, ok := m.peers[tabletID]
+	if !ok {
+		return Meta{}, dberrors.New(dberrors.ErrInvalidArgument, "tablet not found", false, nil)
+	}
+	if p.State != Running {
+		return Meta{}, dberrors.New(dberrors.ErrConflict, "transfer prepare requires running tablet", true, nil)
+	}
+	if err := ensureExpectedStateVersion(p, expectedStateVersion); err != nil {
+		return Meta{}, err
+	}
+	if err := ensureExpectedOwnerEpoch(p, expectedOwnerEpoch); err != nil {
+		return Meta{}, err
+	}
+	if strings.TrimSpace(fromOwner) != "" && p.Meta.OwnerTSUUID != fromOwner {
+		return Meta{}, dberrors.New(dberrors.ErrConflict, "transfer source owner mismatch", true, nil)
+	}
+	if p.Meta.OwnerTSUUID == toOwner {
+		return Meta{}, dberrors.New(dberrors.ErrConflict, "tablet already owned by target owner", true, nil)
+	}
+	if p.Meta.TransferState == TransferStatePrepared {
+		if p.Meta.PendingOwner == toOwner {
+			return p.Meta, nil
+		}
+		return Meta{}, dberrors.New(dberrors.ErrConflict, "tablet transfer already prepared for different target", true, nil)
+	}
+
+	next := p.Meta
+	next.TransferState = TransferStatePrepared
+	next.PendingOwner = toOwner
+	next.TransferEpoch = p.Meta.OwnerEpoch + 1
+	next.StateVersion++
+	if err := m.store.WriteMeta(next); err != nil {
+		return Meta{}, fmt.Errorf("tablet manager: persist transfer prepare %q: %w", tabletID, err)
+	}
+	applyMeta(p, next)
+	return next, nil
+}
+
+func (m *Manager) TransferCommit(_ context.Context, tabletID string, expectedTransferEpoch, expectedStateVersion uint64) (Meta, error) {
+	if !m.beginOp(tabletID) {
+		return Meta{}, dberrors.New(dberrors.ErrConflict, "tablet operation in progress", true, nil)
+	}
+	defer m.endOp(tabletID)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	p, ok := m.peers[tabletID]
+	if !ok {
+		return Meta{}, dberrors.New(dberrors.ErrInvalidArgument, "tablet not found", false, nil)
+	}
+	if p.State != Running {
+		return Meta{}, dberrors.New(dberrors.ErrConflict, "transfer commit requires running tablet", true, nil)
+	}
+	if err := ensureExpectedStateVersion(p, expectedStateVersion); err != nil {
+		return Meta{}, err
+	}
+	if p.Meta.TransferState != TransferStatePrepared || strings.TrimSpace(p.Meta.PendingOwner) == "" {
+		return Meta{}, dberrors.New(dberrors.ErrConflict, "tablet transfer is not prepared", true, nil)
+	}
+	if expectedTransferEpoch != AnyOwnerEpoch && p.Meta.TransferEpoch != expectedTransferEpoch {
+		return Meta{}, dberrors.New(dberrors.ErrConflict, "tablet transfer epoch precondition mismatch", true, nil)
+	}
+
+	next := p.Meta
+	next.OwnerTSUUID = p.Meta.PendingOwner
+	if p.Meta.TransferEpoch > 0 {
+		next.OwnerEpoch = p.Meta.TransferEpoch
+	} else {
+		next.OwnerEpoch++
+	}
+	next.TransferState = TransferStateNone
+	next.TransferEpoch = 0
+	next.PendingOwner = ""
+	next.StateVersion++
+	if err := m.store.WriteMeta(next); err != nil {
+		return Meta{}, fmt.Errorf("tablet manager: persist transfer commit %q: %w", tabletID, err)
+	}
+	applyMeta(p, next)
+	return next, nil
 }
 
 func (m *Manager) ListTablets(_ context.Context) []Peer {
@@ -493,6 +638,32 @@ func ensureExpectedStateVersion(p *Peer, expectedStateVersion uint64) error {
 		return dberrors.New(dberrors.ErrConflict, "tablet state version precondition mismatch", true, nil)
 	}
 	return nil
+}
+
+func ensureExpectedOwnerEpoch(p *Peer, expectedOwnerEpoch uint64) error {
+	if expectedOwnerEpoch == AnyOwnerEpoch {
+		return nil
+	}
+	if p.Meta.OwnerEpoch != expectedOwnerEpoch {
+		return dberrors.New(dberrors.ErrConflict, "tablet owner epoch precondition mismatch", true, nil)
+	}
+	return nil
+}
+
+func normalizeOwnershipMeta(meta *Meta) {
+	if strings.TrimSpace(meta.OwnerTSUUID) == "" {
+		meta.OwnerTSUUID = "local"
+	}
+	if meta.OwnerEpoch == 0 {
+		meta.OwnerEpoch = 1
+	}
+	if meta.TransferState == "" {
+		meta.TransferState = TransferStateNone
+	}
+	if meta.TransferState != TransferStatePrepared {
+		meta.TransferEpoch = 0
+		meta.PendingOwner = ""
+	}
 }
 
 func hasActiveSplitChildren(peers map[string]*Peer, parentID string) bool {

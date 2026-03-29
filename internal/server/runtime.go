@@ -69,7 +69,7 @@ func NewRuntimeWithTabletRPC(cfg Config, rpcServer *rpcpkg.Server, rocksStore ro
 		cfg:        cfg,
 		rpcServer:  rpcServer,
 		clock:      systemClock{},
-		sqlCoord:   sql.NewLocalCoordinator(),
+		sqlCoord:   sql.NewManagedCoordinator(),
 		cqlServer:  cql.NewLocalServer(),
 		rocksStore: rocksStore,
 		tabletRPC:  tabletRPC,
@@ -117,11 +117,7 @@ func (r *Runtime) Start(ctx context.Context) error {
 		return err
 	}
 	if r.sqlCoord != nil {
-		if err := r.sqlCoord.Start(ctx, sql.ProcessConfig{
-			Enabled:        r.cfg.EnableSQL,
-			BindAddress:    r.cfg.SQLBindAddress,
-			MaxConnections: r.cfg.SQLMaxConnections,
-		}); err != nil {
+		if err := r.sqlCoord.Start(ctx, r.sqlProcessConfig()); err != nil {
 			_ = r.rpcServer.Stop(context.Background())
 			return err
 		}
@@ -191,11 +187,7 @@ func (r *Runtime) StartSQL(ctx context.Context) error {
 	if r.sqlCoord == nil {
 		return nil
 	}
-	return r.sqlCoord.Start(ctx, sql.ProcessConfig{
-		Enabled:        r.cfg.EnableSQL,
-		BindAddress:    r.cfg.SQLBindAddress,
-		MaxConnections: r.cfg.SQLMaxConnections,
-	})
+	return r.sqlCoord.Start(ctx, r.sqlProcessConfig())
 }
 
 func (r *Runtime) StopSQL(ctx context.Context) error {
@@ -225,6 +217,21 @@ func (r *Runtime) GetSQLStatus(ctx context.Context) (SQLStatus, error) {
 	}
 	status.Healthy = true
 	return status, nil
+}
+
+func (r *Runtime) sqlProcessConfig() sql.ProcessConfig {
+	return sql.ProcessConfig{
+		Enabled:                  r.cfg.EnableSQL,
+		BindAddress:              r.cfg.SQLBindAddress,
+		MaxConnections:           r.cfg.SQLMaxConnections,
+		PreferProcess:            r.cfg.EnableSQLProcess,
+		ProcessDataDir:           r.cfg.SQLDataDir,
+		ProcessBinPath:           r.cfg.SQLProcessBinPath,
+		ProcessInitDBPath:        r.cfg.SQLProcessInitDBPath,
+		ProcessStartTimeout:      r.cfg.SQLProcessStartTimeout,
+		ProcessStopTimeout:       r.cfg.SQLProcessStopTimeout,
+		AllowCoordinatorFallback: r.cfg.SQLAllowFallbackToCoordinator,
+	}
 }
 
 // GetSnapshotCoordinator returns the snapshot coordinator for this runtime.

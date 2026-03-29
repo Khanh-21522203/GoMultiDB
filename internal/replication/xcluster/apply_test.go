@@ -253,3 +253,37 @@ func TestApplyEventRepeatedTransientThenTerminalFailure(t *testing.T) {
 		t.Fatalf("expected retry count 2 (maxAttempts-1), got %d", stats.RetryCount)
 	}
 }
+
+func TestApplyEventOwnershipTransferMonotonicSequenceGuarantee(t *testing.T) {
+	store := cdc.NewStore()
+	applier := &applierStub{}
+	loop, err := NewLoop(Config{}, store, applier)
+	if err != nil {
+		t.Fatalf("new loop: %v", err)
+	}
+
+	// Before ownership transfer.
+	if err := loop.ApplyEvent(context.Background(), cdc.Event{StreamID: "s-own", TabletID: "t-own", Sequence: 1, TimestampUTC: time.Now().UTC()}); err != nil {
+		t.Fatalf("apply seq1: %v", err)
+	}
+	if err := loop.ApplyEvent(context.Background(), cdc.Event{StreamID: "s-own", TabletID: "t-own", Sequence: 2, TimestampUTC: time.Now().UTC()}); err != nil {
+		t.Fatalf("apply seq2: %v", err)
+	}
+
+	// After ownership transfer, regressed sequence numbers are treated as duplicates.
+	if err := loop.ApplyEvent(context.Background(), cdc.Event{StreamID: "s-own", TabletID: "t-own", Sequence: 1, TimestampUTC: time.Now().UTC()}); err != nil {
+		t.Fatalf("apply regressed seq1 after transfer: %v", err)
+	}
+
+	// Progress resumes only when sequence continues monotonically.
+	if err := loop.ApplyEvent(context.Background(), cdc.Event{StreamID: "s-own", TabletID: "t-own", Sequence: 3, TimestampUTC: time.Now().UTC()}); err != nil {
+		t.Fatalf("apply seq3 after transfer: %v", err)
+	}
+	cp, err := store.GetCheckpoint(context.Background(), "s-own", "t-own")
+	if err != nil {
+		t.Fatalf("get checkpoint: %v", err)
+	}
+	if cp.Sequence != 3 {
+		t.Fatalf("expected checkpoint sequence 3 after ownership transfer, got %d", cp.Sequence)
+	}
+}

@@ -25,8 +25,9 @@ type Scheduler struct {
 	cdcStore *cdc.Store
 	loop     *xcluster.Loop
 
-	inflight map[string]int
-	ticks    int
+	inflight      map[string]int
+	seenOwnership map[string]uint64
+	ticks         int
 }
 
 func NewScheduler(cfg SchedulerConfig, registry *Registry, cdcStore *cdc.Store, loop *xcluster.Loop) (*Scheduler, error) {
@@ -39,7 +40,14 @@ func NewScheduler(cfg SchedulerConfig, registry *Registry, cdcStore *cdc.Store, 
 	if cfg.PollBatchSize <= 0 {
 		cfg.PollBatchSize = 64
 	}
-	return &Scheduler{cfg: cfg, registry: registry, cdcStore: cdcStore, loop: loop, inflight: make(map[string]int)}, nil
+	return &Scheduler{
+		cfg:           cfg,
+		registry:      registry,
+		cdcStore:      cdcStore,
+		loop:          loop,
+		inflight:      make(map[string]int),
+		seenOwnership: make(map[string]uint64),
+	}, nil
 }
 
 func (s *Scheduler) Tick(ctx context.Context) error {
@@ -85,6 +93,11 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 		if allowance < batch {
 			batch = allowance
 		}
+		// After an ownership transfer/failover epoch bump, process one event first
+		// to advance checkpoint safely before restoring full batch size.
+		if stream.OwnershipEpoch > s.getSeenOwnership(stream.ID) && batch > 1 {
+			batch = 1
+		}
 		if batch <= 0 {
 			continue
 		}
@@ -98,6 +111,7 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 			return err
 		}
 		if len(poll.Events) == 0 {
+			s.setSeenOwnership(stream.ID, stream.OwnershipEpoch)
 			continue
 		}
 
@@ -107,6 +121,7 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		s.setSeenOwnership(stream.ID, stream.OwnershipEpoch)
 	}
 	return nil
 }
@@ -159,4 +174,18 @@ func (s *Scheduler) addInFlight(jobID string, delta int) {
 		return
 	}
 	s.inflight[jobID] = next
+}
+
+func (s *Scheduler) getSeenOwnership(streamID string) uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.seenOwnership[streamID]
+}
+
+func (s *Scheduler) setSeenOwnership(streamID string, epoch uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if epoch > s.seenOwnership[streamID] {
+		s.seenOwnership[streamID] = epoch
+	}
 }

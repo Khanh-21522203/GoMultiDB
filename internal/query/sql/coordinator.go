@@ -4,16 +4,24 @@ import (
 	"context"
 	"reflect"
 	"sync"
+	"time"
 
 	dberrors "GoMultiDB/internal/common/errors"
 )
 
 type ProcessConfig struct {
-	Enabled        bool
-	BindAddress    string
-	MaxConnections int
-	HBAConfig      string
-	ExtraConf      map[string]string
+	Enabled                  bool
+	BindAddress              string
+	MaxConnections           int
+	HBAConfig                string
+	ExtraConf                map[string]string
+	PreferProcess            bool
+	ProcessDataDir           string
+	ProcessBinPath           string
+	ProcessInitDBPath        string
+	ProcessStartTimeout      time.Duration
+	ProcessStopTimeout       time.Duration
+	AllowCoordinatorFallback bool
 }
 
 type Coordinator interface {
@@ -88,8 +96,5 @@ func (c *LocalCoordinator) Health(ctx context.Context) error {
 }
 
 func processConfigEqual(a, b ProcessConfig) bool {
-	if a.Enabled != b.Enabled || a.BindAddress != b.BindAddress || a.MaxConnections != b.MaxConnections || a.HBAConfig != b.HBAConfig {
-		return false
-	}
-	return reflect.DeepEqual(a.ExtraConf, b.ExtraConf)
+	return reflect.DeepEqual(a, b)
 }

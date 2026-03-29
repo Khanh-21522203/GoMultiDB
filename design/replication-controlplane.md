@@ -23,6 +23,7 @@ Maintains stream/job administrative state and runs scheduler ticks that poll CDC
 2. `Scheduler.Tick`:
    - optional injected delay/fault via `maybeInjectTransportFault`.
    - list streams/jobs and filter to runnable pairs.
+   - apply ownership-aware batching: on first tick after ownership-epoch change, clamp poll batch to 1 for safe checkpoint continuity.
    - enforce per-job in-flight cap.
    - poll CDC after stream checkpoint.
    - apply batch via `xcluster.Loop.ApplyBatch`.
@@ -30,7 +31,7 @@ Maintains stream/job administrative state and runs scheduler ticks that poll CDC
 
 ### Data Model
 - `Stream`:
-  - `ID`, `TabletID`, `State`, `CreatedAt`, `UpdatedAt`, `Checkpoint`, `LagEvents`.
+  - `ID`, `TabletID`, `PrimaryOwner`, `OwnershipEpoch`, `LastFailoverAt`, `State`, `CreatedAt`, `UpdatedAt`, `Checkpoint`, `LagEvents`.
 - `Job`:
   - `ID`, `StreamID`, `Target`, `State`, `CreatedAt`, `UpdatedAt`.
 - `Snapshot`:
@@ -42,10 +43,13 @@ Maintains stream/job administrative state and runs scheduler ticks that poll CDC
 - Registry APIs:
   - `CreateStream`, `PauseStream`, `ResumeStream`, `StopStream`.
   - `CreateJob`, `PauseJob`, `ResumeJob`, `StopJob`.
+  - `UpdatePrimaryOwnership` updates stream owner + ownership epoch/failover timestamp.
   - `ListStreams`, `ListJobs`, `Snapshot`.
 - Scheduler API:
   - `Tick(ctx)` performs one scheduling cycle.
   - `InFlight(ctx, jobID)` returns current in-flight count.
+- Scheduler ownership contract:
+  - first tick after a new stream ownership epoch processes at most one event, then returns to configured batch size.
 - State transition contract:
   - stopped stream/job cannot transition back to active states.
 
@@ -77,6 +81,3 @@ Maintains stream/job administrative state and runs scheduler ticks that poll CDC
 - Fault injection in scheduler is deterministic by tick count, useful for tests but not dynamic runtime policy.
 
 Changes:
-
-- Keep scheduler/registry only if async CDC/xCluster replication remains in scope; otherwise decommission these control-plane paths.
-- Update scheduling inputs to track post-Raft primary ownership and failover signals.

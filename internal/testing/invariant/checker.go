@@ -12,12 +12,14 @@ type WriteRecord struct {
 	Value []byte
 }
 
-// TabletState represents the last-applied operation ID for a replica.
+// TabletReplicaState represents per-node apply state for a tablet.
 type TabletReplicaState struct {
 	NodeID    string
 	TabletID  string
 	LastOpID  uint64
 	Timestamp time.Time
+	// IsPrimary marks the node currently serving primary ownership/routing.
+	IsPrimary bool
 }
 
 // ClusterInspector provides read-only access to cluster state for invariant checking.
@@ -48,12 +50,13 @@ func AssertNoLostWrites(writes []WriteRecord, inspector ClusterInspector) error 
 	return nil
 }
 
-// AssertReplicaConvergence verifies that all replicas of each tablet have the same
-// last-applied opID within the given tolerance window.
-func AssertReplicaConvergence(inspector ClusterInspector, tolerance time.Duration) error {
+// AssertOwnershipConvergence verifies ownership and replication convergence:
+// each tablet must have exactly one primary owner and all replicas should
+// converge to the same apply position within tolerance.
+func AssertOwnershipConvergence(inspector ClusterInspector, tolerance time.Duration) error {
 	states, err := inspector.TabletReplicaStates()
 	if err != nil {
-		return fmt.Errorf("replica_convergence: list states: %w", err)
+		return fmt.Errorf("ownership_convergence: list states: %w", err)
 	}
 
 	// Group by tabletID.
@@ -64,6 +67,15 @@ func AssertReplicaConvergence(inspector ClusterInspector, tolerance time.Duratio
 
 	now := time.Now()
 	for tabletID, replicas := range byTablet {
+		primaries := 0
+		for _, r := range replicas {
+			if r.IsPrimary {
+				primaries++
+			}
+		}
+		if primaries != 1 {
+			return fmt.Errorf("ownership_convergence: tablet=%s expected exactly 1 primary owner, got %d", tabletID, primaries)
+		}
 		if len(replicas) < 2 {
 			continue
 		}
@@ -82,7 +94,7 @@ func AssertReplicaConvergence(inspector ClusterInspector, tolerance time.Duratio
 			// Check if the lagging replica's state is stale within tolerance.
 			for _, r := range replicas {
 				if r.LastOpID == minOp && now.Sub(r.Timestamp) > tolerance {
-					return fmt.Errorf("replica_convergence: tablet=%s replica=%s lagging: min=%d max=%d",
+					return fmt.Errorf("ownership_convergence: tablet=%s replica=%s lagging: min=%d max=%d",
 						tabletID, r.NodeID, minOp, maxOp)
 				}
 			}
@@ -91,29 +103,64 @@ func AssertReplicaConvergence(inspector ClusterInspector, tolerance time.Duratio
 	return nil
 }
 
-// AssertNoUncommittedIntents verifies that no non-terminal transaction intents remain.
-func AssertNoUncommittedIntents(inspector ClusterInspector) error {
+// AssertRoutingConsistency verifies that each tablet has one primary route and
+// that the primary signal is fresh enough for routing.
+func AssertRoutingConsistency(inspector ClusterInspector, primaryStaleness time.Duration) error {
+	states, err := inspector.TabletReplicaStates()
+	if err != nil {
+		return fmt.Errorf("routing_consistency: list states: %w", err)
+	}
+	byTablet := make(map[string][]TabletReplicaState)
+	for _, s := range states {
+		byTablet[s.TabletID] = append(byTablet[s.TabletID], s)
+	}
+
+	now := time.Now()
+	for tabletID, replicas := range byTablet {
+		var primary *TabletReplicaState
+		primaryCount := 0
+		for i := range replicas {
+			if !replicas[i].IsPrimary {
+				continue
+			}
+			primaryCount++
+			if primary == nil {
+				primary = &replicas[i]
+			}
+		}
+		if primaryCount != 1 || primary == nil {
+			return fmt.Errorf("routing_consistency: tablet=%s expected exactly 1 primary route, got %d", tabletID, primaryCount)
+		}
+		if now.Sub(primary.Timestamp) > primaryStaleness {
+			return fmt.Errorf("routing_consistency: tablet=%s primary=%s signal stale=%s", tabletID, primary.NodeID, now.Sub(primary.Timestamp))
+		}
+	}
+	return nil
+}
+
+// AssertDurabilityNoPendingIntents verifies that no non-terminal transaction intents remain.
+func AssertDurabilityNoPendingIntents(inspector ClusterInspector) error {
 	pending, err := inspector.ListPendingIntents()
 	if err != nil {
-		return fmt.Errorf("no_uncommitted_intents: list: %w", err)
+		return fmt.Errorf("durability_no_pending_intents: list: %w", err)
 	}
 	if len(pending) > 0 {
-		return fmt.Errorf("no_uncommitted_intents: %d non-terminal intents remain: %v",
+		return fmt.Errorf("durability_no_pending_intents: %d non-terminal intents remain: %v",
 			len(pending), pending)
 	}
 	return nil
 }
 
-// AssertNoDoubleApply verifies that no operation was applied more than once on any node.
-func AssertNoDoubleApply(nodeIDs []string, inspector ClusterInspector) error {
+// AssertDurabilityNoDoubleApply verifies that no operation was applied more than once on any node.
+func AssertDurabilityNoDoubleApply(nodeIDs []string, inspector ClusterInspector) error {
 	for _, nodeID := range nodeIDs {
 		applied, err := inspector.ListAppliedOpIDs(nodeID)
 		if err != nil {
-			return fmt.Errorf("no_double_apply: list ops for %s: %w", nodeID, err)
+			return fmt.Errorf("durability_no_double_apply: list ops for %s: %w", nodeID, err)
 		}
 		for opID, count := range applied {
 			if count > 1 {
-				return fmt.Errorf("no_double_apply: node=%s opID=%d applied %d times",
+				return fmt.Errorf("durability_no_double_apply: node=%s opID=%d applied %d times",
 					nodeID, opID, count)
 			}
 		}
@@ -121,29 +168,53 @@ func AssertNoDoubleApply(nodeIDs []string, inspector ClusterInspector) error {
 	return nil
 }
 
+// AssertReplicaConvergence is kept as a compatibility alias for ownership convergence.
+func AssertReplicaConvergence(inspector ClusterInspector, tolerance time.Duration) error {
+	return AssertOwnershipConvergence(inspector, tolerance)
+}
+
+// AssertNoUncommittedIntents is kept as a compatibility alias for durability checks.
+func AssertNoUncommittedIntents(inspector ClusterInspector) error {
+	return AssertDurabilityNoPendingIntents(inspector)
+}
+
+// AssertNoDoubleApply is kept as a compatibility alias for durability checks.
+func AssertNoDoubleApply(nodeIDs []string, inspector ClusterInspector) error {
+	return AssertDurabilityNoDoubleApply(nodeIDs, inspector)
+}
+
 // AssertInvariant dispatches to the named invariant checker.
-// Supported names: "no_lost_writes" (requires writes), "replica_convergence",
-// "no_uncommitted_intents", "no_double_apply" (requires nodeIDs).
+// Supported names: "no_lost_writes" (requires writes), "ownership_convergence",
+// "routing_consistency", "durability_no_pending_intents",
+// "durability_no_double_apply" (requires nodeIDs).
 func AssertInvariant(name string, inspector ClusterInspector, opts ...any) error {
 	switch name {
-	case "replica_convergence":
+	case "ownership_convergence", "replica_convergence":
 		tolerance := 5 * time.Second
 		for _, o := range opts {
 			if d, ok := o.(time.Duration); ok {
 				tolerance = d
 			}
 		}
-		return AssertReplicaConvergence(inspector, tolerance)
-	case "no_uncommitted_intents":
-		return AssertNoUncommittedIntents(inspector)
-	case "no_double_apply":
+		return AssertOwnershipConvergence(inspector, tolerance)
+	case "routing_consistency":
+		staleness := 5 * time.Second
+		for _, o := range opts {
+			if d, ok := o.(time.Duration); ok {
+				staleness = d
+			}
+		}
+		return AssertRoutingConsistency(inspector, staleness)
+	case "durability_no_pending_intents", "no_uncommitted_intents":
+		return AssertDurabilityNoPendingIntents(inspector)
+	case "durability_no_double_apply", "no_double_apply":
 		var nodeIDs []string
 		for _, o := range opts {
 			if ids, ok := o.([]string); ok {
 				nodeIDs = ids
 			}
 		}
-		return AssertNoDoubleApply(nodeIDs, inspector)
+		return AssertDurabilityNoDoubleApply(nodeIDs, inspector)
 	case "no_lost_writes":
 		var writes []WriteRecord
 		for _, o := range opts {

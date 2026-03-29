@@ -29,13 +29,16 @@ const (
 )
 
 type Stream struct {
-	ID         string
-	TabletID   string
-	State      StreamState
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
-	Checkpoint uint64
-	LagEvents  uint64
+	ID             string
+	TabletID       string
+	PrimaryOwner   string
+	OwnershipEpoch uint64
+	LastFailoverAt time.Time
+	State          StreamState
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	Checkpoint     uint64
+	LagEvents      uint64
 }
 
 type Job struct {
@@ -99,6 +102,45 @@ func (r *Registry) CreateStream(ctx context.Context, id, tabletID string) error 
 	}
 	now := time.Now().UTC()
 	r.streams[id] = Stream{ID: id, TabletID: tabletID, State: StreamStateRunning, CreatedAt: now, UpdatedAt: now}
+	return r.saveLocked()
+}
+
+// UpdatePrimaryOwnership updates stream ownership metadata used by post-Raft
+// schedulers to react to failover and ownership transfer events.
+func (r *Registry) UpdatePrimaryOwnership(ctx context.Context, id, primaryOwner string, ownershipEpoch uint64, failover bool) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	if id == "" {
+		return dberrors.New(dberrors.ErrInvalidArgument, "stream id is required", false, nil)
+	}
+	if primaryOwner == "" {
+		return dberrors.New(dberrors.ErrInvalidArgument, "primary owner is required", false, nil)
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	s, ok := r.streams[id]
+	if !ok {
+		return dberrors.New(dberrors.ErrInvalidArgument, "stream not found", false, nil)
+	}
+	if ownershipEpoch == 0 {
+		ownershipEpoch = s.OwnershipEpoch + 1
+	}
+	if ownershipEpoch < s.OwnershipEpoch {
+		return dberrors.New(dberrors.ErrConflict, "ownership epoch regression is not allowed", false, nil)
+	}
+
+	now := time.Now().UTC()
+	s.PrimaryOwner = primaryOwner
+	s.OwnershipEpoch = ownershipEpoch
+	if failover {
+		s.LastFailoverAt = now
+	}
+	s.UpdatedAt = now
+	r.streams[id] = s
 	return r.saveLocked()
 }
 

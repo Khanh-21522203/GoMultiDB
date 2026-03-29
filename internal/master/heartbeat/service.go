@@ -115,13 +115,18 @@ func NewService(ts *TSManager, cat *catalog.Manager) *Service {
 	}
 }
 
-func (s *Service) SetLeader(isLeader bool) {
+func (s *Service) SetPrimary(isPrimary bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.isLeader = isLeader
+	s.isLeader = isPrimary
 	if s.catalog != nil {
-		s.catalog.SetLeader(isLeader)
+		s.catalog.SetPrimary(isPrimary)
 	}
+}
+
+// SetLeader is retained for backwards compatibility.
+func (s *Service) SetLeader(isLeader bool) {
+	s.SetPrimary(isLeader)
 }
 
 func (s *Service) TSHeartbeat(ctx context.Context, req HeartbeatRequest) (HeartbeatResponse, error) {

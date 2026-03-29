@@ -78,6 +78,48 @@ func TestInvalidTransitionsUseCanonicalErrors(t *testing.T) {
 	}
 }
 
+func TestUpdatePrimaryOwnership(t *testing.T) {
+	r := NewRegistry()
+	ctx := context.Background()
+	if err := r.CreateStream(ctx, "s-own", "t-own"); err != nil {
+		t.Fatalf("create stream: %v", err)
+	}
+
+	if err := r.UpdatePrimaryOwnership(ctx, "s-own", "ts-1", 1, false); err != nil {
+		t.Fatalf("update ownership epoch 1: %v", err)
+	}
+	streams, err := r.ListStreams(ctx)
+	if err != nil {
+		t.Fatalf("list streams: %v", err)
+	}
+	if len(streams) != 1 {
+		t.Fatalf("expected one stream, got %d", len(streams))
+	}
+	if streams[0].PrimaryOwner != "ts-1" || streams[0].OwnershipEpoch != 1 {
+		t.Fatalf("unexpected ownership metadata: %+v", streams[0])
+	}
+
+	if err := r.UpdatePrimaryOwnership(ctx, "s-own", "ts-2", 0, true); err != nil {
+		t.Fatalf("auto-increment ownership epoch: %v", err)
+	}
+	streams, err = r.ListStreams(ctx)
+	if err != nil {
+		t.Fatalf("list streams after failover: %v", err)
+	}
+	if streams[0].PrimaryOwner != "ts-2" || streams[0].OwnershipEpoch != 2 {
+		t.Fatalf("unexpected failover ownership metadata: %+v", streams[0])
+	}
+	if streams[0].LastFailoverAt.IsZero() {
+		t.Fatalf("expected failover timestamp to be set")
+	}
+
+	if err := r.UpdatePrimaryOwnership(ctx, "s-own", "ts-1", 1, false); err == nil {
+		t.Fatalf("expected epoch regression to fail")
+	} else if n := dberrors.NormalizeError(err); n.Code != dberrors.ErrConflict {
+		t.Fatalf("expected conflict for epoch regression, got %s", n.Code)
+	}
+}
+
 func TestSnapshotDeterminism(t *testing.T) {
 	ctx := context.Background()
 

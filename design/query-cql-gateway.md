@@ -1,7 +1,7 @@
 # CQL Gateway
 
 ### Purpose
-Implements a local CQL-compatible gateway with binary frame parsing, connection/session state, prepared statement cache behavior, and query routing stubs.
+Implements a local CQL-compatible gateway with binary frame parsing, connection/session state, prepared statement cache behavior, and a dedicated in-package execution backend for core CQL DML operations.
 
 ### Scope
 **In scope:**
@@ -9,15 +9,17 @@ Implements a local CQL-compatible gateway with binary frame parsing, connection/
 - Protocol frame and message codecs in `protocol.go` and `messages.go`.
 - Session and prepared statement cache behavior in `session.go`.
 - Server lifecycle and connection tracking in `server.go`.
+- Core execution engine and statement parsing in `executor.go`.
 
 **Out of scope:**
-- Real storage/query execution planning (current `Route` path mostly acknowledges operations).
+- Full CQL surface parity (current execution backend handles core SELECT/INSERT/UPDATE/DELETE).
+- Auth/event subscription protocol workflows (returned as explicit unsupported errors).
 
 ### Primary User Flow
 1. Client opens TCP connection to CQL bind address.
 2. Client sends startup/options/query/prepare/execute frames.
 3. Listener parses frames and dispatches to `LocalServer` + `SessionManager`.
-4. Server returns READY/SUPPORTED/RESULT/ERROR frames.
+4. Server executes core DML via local execution engine and returns READY/SUPPORTED/RESULT/ERROR frames.
 
 ### System Flow
 1. Entry: `internal/query/cql/listener.go:Start` binds listener when `Config.Enabled`.
@@ -27,16 +29,19 @@ Implements a local CQL-compatible gateway with binary frame parsing, connection/
    - `OpcodeOptions` -> SUPPORTED
    - `OpcodeQuery` -> `LocalServer.Route`
    - `OpcodePrepare` -> `SessionManager.Prepare`
-   - `OpcodeExecute` -> `SessionManager.ExecutePrepared`
-4. `LocalServer` maintains active connection limits and delegates session metadata to `SessionManager`.
+   - `OpcodeExecute` -> prepared lookup + `LocalServer.Route`
+   - `OpcodeBatch` -> `BatchRequest.Unmarshal` + `LocalServer.RouteBatch`
+   - `OpcodeRegister` and auth opcodes -> explicit protocol ERROR (unsupported)
+4. `LocalServer` maintains active connection limits, resolves prepared statements, and executes core DML through `executionEngine`.
 
 ```
 TCP Conn
   └── ReadFrame
         └── handleFrame(opcode)
               ├── prepare -> session cache insert
-              ├── execute -> schema/version check
-              └── query   -> Route() response
+              ├── execute -> prepared resolve + executionEngine
+              ├── batch   -> per-item Route dispatch
+              └── query   -> executionEngine
 ```
 
 ### Data Model
@@ -48,6 +53,9 @@ TCP Conn
   - `ID`, `Query`, `Plan []byte`, `SchemaVer`.
 - `PreparedStats`:
   - `CacheHits`, `CacheMisses`, `InvalidationCount`.
+- `executionEngine`:
+  - In-memory per-table row counters keyed by parsed table identifier.
+  - Statement parser for core CQL forms (`SELECT`, `INSERT`, `UPDATE`, `DELETE`).
 - Persistence: none; all gateway/session state is in-memory.
 
 ### Interfaces and Contracts
@@ -71,8 +79,9 @@ TCP Conn
 - Max connection limit returns `ErrRetryableUnavailable`.
 - Missing connection/session/prepared IDs return `ErrInvalidArgument`.
 - Prepared statement schema mismatch returns `ErrConflict` (retryable flag true).
+- Unsupported statement classes return `ErrInvalidArgument`.
 - Oversized frame read (>256MB) fails in `Connection.ReadFrame`.
-- Unsupported opcodes generate protocol error response.
+- Unsupported register/auth opcodes generate explicit protocol error responses.
 
 ### Observability and Debugging
 - No dedicated metric/log stream in this package; debugging typically starts at:
@@ -86,10 +95,7 @@ TCP Conn
   - `internal/query/cql/session_test.go`
 
 ### Risks and Notes
-- Auth-related opcodes are defined but not fully implemented in request handling.
-- Query execution path is scaffold-level (`Applied=true`) for many operations.
+- Execution backend is intentionally scoped to core DML and in-memory semantics; advanced CQL features and storage-backed plans are not implemented yet.
+- Auth and event subscription opcodes remain explicitly unsupported.
 
 Changes:
-
-- Finish CQL gateway implementation from scaffold level to complete request execution behavior.
-- Replace stub-style routing responses with real query path integration and complete protocol handling coverage.

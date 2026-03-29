@@ -75,7 +75,13 @@ type Manager struct {
 }
 
 func NewManager() *Manager {
-	return &Manager{sessions: make(map[string]*Session)}
+	resolver, dispatcher, coordinator := newDefaultBridge()
+	return &Manager{
+		sessions:          make(map[string]*Session),
+		tabletDispatcher:  dispatcher,
+		partitionResolver: resolver,
+		txnCoordinator:    coordinator,
+	}
 }
 
 func (m *Manager) OpenSession(ctx context.Context, reqID ids.RequestID) (string, error) {
@@ -181,8 +187,10 @@ func (m *Manager) FlushWrites(ctx context.Context, sessionID string) ([]WriteOp,
 	resolver := m.partitionResolver
 	m.mu.Unlock()
 
-	// Real dispatch: if both dispatcher and resolver are injected, send to tablets.
-	if dispatcher != nil && resolver != nil && len(ops) > 0 {
+	if len(ops) > 0 {
+		if dispatcher == nil || resolver == nil {
+			return nil, dberrors.New(dberrors.ErrRetryableUnavailable, "pggate write bridge is not configured", true, nil)
+		}
 		m.mu.RLock()
 		sessionCopy := m.sessions[sessionID]
 		var sCopy *Session
@@ -239,39 +247,22 @@ func (m *Manager) BeginTxn(ctx context.Context, sessionID string, reqID ids.Requ
 	coordinator := m.txnCoordinator
 	m.mu.Unlock()
 
-	// Real coordinator path.
-	if coordinator != nil {
-		m.mu.Lock()
-		sess, ok2 := m.sessions[sessionID]
-		if !ok2 {
-			m.mu.Unlock()
-			return nil, dberrors.New(dberrors.ErrInvalidArgument, "session not found", false, nil)
-		}
-		handle, err := m.beginTxnReal(ctx, sess, reqID)
-		m.mu.Unlock()
-		if err != nil {
-			return nil, err
-		}
-		txn := *handle
-		return &txn, nil
+	if coordinator == nil {
+		return nil, dberrors.New(dberrors.ErrRetryableUnavailable, "pggate transaction coordinator is not configured", true, nil)
 	}
 
-	// Stub path.
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	s, ok = m.sessions[sessionID]
-	if !ok {
+	sess, ok2 := m.sessions[sessionID]
+	if !ok2 {
+		m.mu.Unlock()
 		return nil, dberrors.New(dberrors.ErrInvalidArgument, "session not found", false, nil)
 	}
-	s.Txn = &TxnHandle{
-		TxnID:      fmt.Sprintf("%s-txn-%s", sessionID, reqID),
-		State:      TxnStateActive,
-		Epoch:      1,
-		OpSeq:      0,
-		Savepoints: make([]Savepoint, 0),
+	handle, err := m.beginTxnReal(ctx, sess, reqID)
+	m.mu.Unlock()
+	if err != nil {
+		return nil, err
 	}
-	txn := *s.Txn
-	txn.Savepoints = append([]Savepoint(nil), s.Txn.Savepoints...)
+	txn := *handle
 	return &txn, nil
 }
 
@@ -394,6 +385,7 @@ func (m *Manager) CommitTxn(ctx context.Context, sessionID string) error {
 	s, ok := m.sessions[sessionID]
 	coordinator := m.txnCoordinator
 	dispatcher := m.tabletDispatcher
+	resolver := m.partitionResolver
 	m.mu.RUnlock()
 
 	if !ok {
@@ -403,19 +395,11 @@ func (m *Manager) CommitTxn(ctx context.Context, sessionID string) error {
 		return dberrors.New(dberrors.ErrConflict, "no active transaction", false, nil)
 	}
 
-	// Real coordinator commit.
-	if coordinator != nil && dispatcher != nil {
-		return m.commitTxnReal(ctx, sessionID, s)
+	if coordinator == nil || dispatcher == nil || resolver == nil {
+		return dberrors.New(dberrors.ErrRetryableUnavailable, "pggate transaction bridge is not configured", true, nil)
 	}
 
-	// Stub path.
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if sess, ok2 := m.sessions[sessionID]; ok2 {
-		sess.Txn = nil
-		sess.PendingWrites = sess.PendingWrites[:0]
-	}
-	return nil
+	return m.commitTxnReal(ctx, sessionID, s)
 }
 
 func (m *Manager) AbortTxn(ctx context.Context, sessionID string) error {
@@ -431,7 +415,6 @@ func (m *Manager) AbortTxn(ctx context.Context, sessionID string) error {
 	m.mu.RLock()
 	s, ok := m.sessions[sessionID]
 	coordinator := m.txnCoordinator
-	dispatcher := m.tabletDispatcher
 	m.mu.RUnlock()
 
 	if !ok {
@@ -441,19 +424,11 @@ func (m *Manager) AbortTxn(ctx context.Context, sessionID string) error {
 		return nil
 	}
 
-	// Real coordinator abort.
-	if coordinator != nil && dispatcher != nil {
-		return m.abortTxnReal(ctx, sessionID, s)
+	if coordinator == nil {
+		return dberrors.New(dberrors.ErrRetryableUnavailable, "pggate transaction coordinator is not configured", true, nil)
 	}
 
-	// Stub path.
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if sess, ok2 := m.sessions[sessionID]; ok2 {
-		sess.Txn = nil
-		sess.PendingWrites = sess.PendingWrites[:0]
-	}
-	return nil
+	return m.abortTxnReal(ctx, sessionID, s)
 }
 
 func (m *Manager) InvalidateTableCache(ctx context.Context, sessionID string, newCatalogVersion uint64) error {

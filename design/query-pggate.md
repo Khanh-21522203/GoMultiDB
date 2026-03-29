@@ -1,35 +1,38 @@
 # PgGate
 
 ### Purpose
-Implements PgGate session state, transactional write buffering, read/write execution stubs, idempotent request semantics, and optional bridge interfaces to real tablet dispatch and distributed txn coordinator.
+Implements PgGate session state, transactional write buffering, idempotent request semantics, and a default in-process bridge for partition resolution, tablet dispatch, and distributed transaction coordination.
 
 ### Scope
 **In scope:**
 - Session and transaction state in `internal/query/pggate/session.go`.
 - Exec read/write paths and retry stats in `executor.go`.
-- External bridge interfaces (`TabletDispatcher`, `PartitionResolver`, `TxnCoordinator`) in `dispatch.go`.
+- Bridge interfaces and default local bridge implementations in `dispatch.go` and `local_bridge.go`.
 
 **Out of scope:**
 - SQL parser/planner.
-- Actual tablet storage operations (injected via interfaces).
+- Cross-node/master-driven routing and RPC dispatch (current default bridge is single-node in-process).
 
 ### Primary User Flow
 1. Caller opens PgGate session with request ID.
 2. Caller begins transaction (optional), queues writes, runs reads, creates savepoints.
-3. Caller commits or aborts transaction; with bridge injection this dispatches to real coordinator/tablets.
+3. Caller commits or aborts transaction; default bridge dispatches reads/writes and transaction lifecycle through concrete resolver/dispatcher/coordinator implementations.
 4. Caller closes session.
 
 ### System Flow
 1. Entry methods:
    - `OpenSession(ctx, reqID)` creates `Session` keyed by `pggate-<reqID>`.
    - `ExecWrite*` validates input, optional idempotency mark, queues write, optional flush.
-   - `ExecRead*` validates input and optionally dispatches to tablet bridge.
+   - `ExecRead*` validates input and dispatches through resolver + tablet dispatcher.
 2. Transaction methods:
-   - `BeginTxn` creates `TxnHandle` (stub) or delegates to `TxnCoordinator.Begin`.
-   - `CommitTxn` flushes writes and calls `TxnCoordinator.Commit` when real bridge is configured.
-   - `AbortTxn` calls coordinator abort path when configured.
+   - `BeginTxn` delegates to `TxnCoordinator.Begin`.
+   - `CommitTxn` flushes writes and calls `TxnCoordinator.Commit`.
+   - `AbortTxn` calls `TxnCoordinator.Abort`.
 3. Savepoints:
    - `CreateSavepoint`, `RollbackToSavepoint`, `ReleaseSavepoint` operate on pending writes and op sequence.
+4. Default bridge wiring:
+   - `NewManager()` injects local implementations for `PartitionResolver`, `TabletDispatcher`, and `TxnCoordinator`.
+   - If bridge dependencies are explicitly unset, read/write/txn operations fail fast with retryable unavailable errors instead of silently using stub behavior.
 
 ### Data Model
 - `Session`:
@@ -42,6 +45,10 @@ Implements PgGate session state, transactional write buffering, read/write execu
   - `TableID`, `IndexID`, `BindVars`, `Targets`, `FetchSize`.
 - `ExecResponse`:
   - `Applied`, `Writes`, `Rows`, `TxnID`, `InTxn`, `Flushed`, `OpSeq`, `Conflict`.
+- Default bridge state:
+  - Local tablet shard mapping from table/bind vars.
+  - In-memory per-table row counters in `localTabletDispatcher`.
+  - `txn.Manager`-backed transaction tracking in `localTxnCoordinator`.
 - Persistence: none; manager state is in-memory.
 
 ### Interfaces and Contracts
@@ -71,6 +78,7 @@ Implements PgGate session state, transactional write buffering, read/write execu
 - Savepoint operations without active transaction return `ErrConflict`.
 - Commit/abort with invalid txn ID hex in real bridge path returns `ErrInvalidArgument`.
 - Bridge resolver/dispatcher/coordinator failures bubble to caller.
+- Explicitly missing bridge dependencies return `ErrRetryableUnavailable` (no stub fallback path).
 
 ### Observability and Debugging
 - Stats surface: `RetryStats(ctx)` exposes read/write restart conflict counters.
@@ -82,10 +90,7 @@ Implements PgGate session state, transactional write buffering, read/write execu
   - `session_test.go`, `executor_test.go`, `dispatch_test.go`, `failover_semantics_test.go`.
 
 ### Risks and Notes
-- Default behavior is scaffold-style for many reads/writes when real bridge dependencies are not injected.
+- Default bridge semantics are single-node and in-memory; they provide deterministic execution flow but do not represent full multi-node routing semantics yet.
 - Idempotent replay currently accepts identical fingerprints but still queues duplicate writes in current skeleton behavior.
 
 Changes:
-
-- Finish PgGate implementation and remove scaffold-only behavior in read/write execution paths.
-- Complete real tablet dispatch, partition resolution, and distributed transaction bridge flow as default behavior.

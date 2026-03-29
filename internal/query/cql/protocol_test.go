@@ -245,3 +245,56 @@ func TestRegisterRequestMarshal(t *testing.T) {
 		t.Fatalf("events: want 2, got %d", len(parsed.Events))
 	}
 }
+
+func TestBatchRequestMarshal(t *testing.T) {
+	codec := NewCodec()
+	req := &BatchRequest{
+		Type:        BatchTypeLogged,
+		Consistency: ConsistencyQuorum,
+		Queries: []BatchQuery{
+			{
+				Kind:        0,
+				QueryString: "INSERT INTO t (k, v) VALUES (?, ?)",
+				Values:      [][]byte{[]byte("1"), []byte("a")},
+			},
+			{
+				Kind:    1,
+				QueryID: []byte("prepared-1"),
+				Values:  [][]byte{[]byte("2")},
+			},
+		},
+		SerialConsistency: ConsistencyLocalQuorum,
+		Timestamp:         123456789,
+	}
+
+	buf := &bytes.Buffer{}
+	if err := req.Marshal(codec, buf); err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	parsed := &BatchRequest{}
+	if err := parsed.Unmarshal(codec, buf.Bytes()); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if parsed.Type != BatchTypeLogged {
+		t.Fatalf("type: want LOGGED, got %d", parsed.Type)
+	}
+	if len(parsed.Queries) != 2 {
+		t.Fatalf("queries length: want 2, got %d", len(parsed.Queries))
+	}
+	if parsed.Queries[0].QueryString == "" {
+		t.Fatalf("expected first query string to be present")
+	}
+	if string(parsed.Queries[1].QueryID) != "prepared-1" {
+		t.Fatalf("expected prepared query id to round-trip")
+	}
+	if parsed.Consistency != ConsistencyQuorum {
+		t.Fatalf("consistency: want QUORUM, got %d", parsed.Consistency)
+	}
+	if parsed.SerialConsistency != ConsistencyLocalQuorum {
+		t.Fatalf("serial consistency mismatch: got %d", parsed.SerialConsistency)
+	}
+	if parsed.Timestamp != 123456789 {
+		t.Fatalf("timestamp mismatch: got %d", parsed.Timestamp)
+	}
+}

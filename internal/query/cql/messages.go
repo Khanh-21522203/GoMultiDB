@@ -15,23 +15,23 @@ type StartupRequest struct {
 
 // QueryRequest executes a CQL query.
 type QueryRequest struct {
-	Query         string
-	Consistency   ConsistencyLevel
-	Flags         byte
-	QueryParams   *QueryParams
-	ResultPageID  []byte // for paging
+	Query        string
+	Consistency  ConsistencyLevel
+	Flags        byte
+	QueryParams  *QueryParams
+	ResultPageID []byte // for paging
 }
 
 // QueryParams contains bound parameters for a query.
 type QueryParams struct {
-	Consistency      ConsistencyLevel
-	SkipMetadata     bool
-	Values           [][]byte
-	PageSize         int
-	PagingState      []byte
+	Consistency       ConsistencyLevel
+	SkipMetadata      bool
+	Values            [][]byte
+	PageSize          int
+	PagingState       []byte
 	SerialConsistency ConsistencyLevel
-	Timestamp        int64
-	Keyspace         string
+	Timestamp         int64
+	Keyspace          string
 }
 
 // PrepareRequest prepares a statement for execution.
@@ -50,19 +50,19 @@ type ExecuteRequest struct {
 
 // BatchRequest executes a batch of statements.
 type BatchRequest struct {
-	Type          BatchType
-	Queries       []BatchQuery
-	Consistency   ConsistencyLevel
+	Type              BatchType
+	Queries           []BatchQuery
+	Consistency       ConsistencyLevel
 	SerialConsistency ConsistencyLevel
-	Timestamp     int64
+	Timestamp         int64
 }
 
 // BatchQuery is a single query in a batch.
 type BatchQuery struct {
-	Kind           byte // 0=query string, 1=prepared statement ID
-	QueryString    string
-	QueryID        []byte
-	Values         [][]byte
+	Kind        byte // 0=query string, 1=prepared statement ID
+	QueryString string
+	QueryID     []byte
+	Values      [][]byte
 }
 
 // RegisterRequest registers for events.
@@ -74,8 +74,8 @@ type RegisterRequest struct {
 
 // ResultResponse contains query results.
 type ResultResponse struct {
-	Kind        ResultKind
-	Rows        *RowsResult
+	Kind         ResultKind
+	Rows         *RowsResult
 	SchemaChange *SchemaChangeResult
 }
 
@@ -83,25 +83,25 @@ type ResultResponse struct {
 type ResultKind byte
 
 const (
-	ResultKindVoid        ResultKind = 0x01
-	ResultKindRows        ResultKind = 0x02
-	ResultKindSetKeyspace ResultKind = 0x03
-	ResultKindPrepared    ResultKind = 0x04
+	ResultKindVoid         ResultKind = 0x01
+	ResultKindRows         ResultKind = 0x02
+	ResultKindSetKeyspace  ResultKind = 0x03
+	ResultKindPrepared     ResultKind = 0x04
 	ResultKindSchemaChange ResultKind = 0x05
 )
 
 // RowsResult contains row data.
 type RowsResult struct {
-	Metadata     *RowsMetadata
-	Rows         []*Row
-	PagingState  []byte
+	Metadata    *RowsMetadata
+	Rows        []*Row
+	PagingState []byte
 }
 
 // RowsMetadata describes result columns.
 type RowsMetadata struct {
-	Flags      int
-	Columns    []*Column
-	RowCount   int
+	Flags    int
+	Columns  []*Column
+	RowCount int
 }
 
 // Column describes a single column.
@@ -125,46 +125,46 @@ type Value struct {
 type DataType byte
 
 const (
-	TypeCustom      DataType = 0x00
-	TypeAscii       DataType = 0x01
-	TypeBigInt      DataType = 0x02
-	TypeBlob        DataType = 0x03
-	TypeBoolean     DataType = 0x04
-	TypeCounter     DataType = 0x05
-	TypeDecimal     DataType = 0x06
-	TypeDouble      DataType = 0x07
-	TypeFloat       DataType = 0x08
-	TypeInt         DataType = 0x09
-	TypeTimestamp   DataType = 0x0B
-	TypeUUID        DataType = 0x0C
-	TypeVarchar     DataType = 0x0D
-	TypeVarint      DataType = 0x0E
-	TypeTimeUUID    DataType = 0x0F
-	TypeInet        DataType = 0x10
-	TypeDate        DataType = 0x11
-	TypeTime        DataType = 0x12
-	TypeSmallInt    DataType = 0x13
-	TypeTinyInt     DataType = 0x14
-	TypeDuration    DataType = 0x15
-	TypeList        DataType = 0x20
-	TypeMap         DataType = 0x21
-	TypeSet         DataType = 0x22
-	TypeUDT         DataType = 0x30
-	TypeTuple       DataType = 0x31
+	TypeCustom    DataType = 0x00
+	TypeAscii     DataType = 0x01
+	TypeBigInt    DataType = 0x02
+	TypeBlob      DataType = 0x03
+	TypeBoolean   DataType = 0x04
+	TypeCounter   DataType = 0x05
+	TypeDecimal   DataType = 0x06
+	TypeDouble    DataType = 0x07
+	TypeFloat     DataType = 0x08
+	TypeInt       DataType = 0x09
+	TypeTimestamp DataType = 0x0B
+	TypeUUID      DataType = 0x0C
+	TypeVarchar   DataType = 0x0D
+	TypeVarint    DataType = 0x0E
+	TypeTimeUUID  DataType = 0x0F
+	TypeInet      DataType = 0x10
+	TypeDate      DataType = 0x11
+	TypeTime      DataType = 0x12
+	TypeSmallInt  DataType = 0x13
+	TypeTinyInt   DataType = 0x14
+	TypeDuration  DataType = 0x15
+	TypeList      DataType = 0x20
+	TypeMap       DataType = 0x21
+	TypeSet       DataType = 0x22
+	TypeUDT       DataType = 0x30
+	TypeTuple     DataType = 0x31
 )
 
 // SchemaChangeResult describes a DDL operation.
 type SchemaChangeResult struct {
-	Change string // "CREATED", "UPDATED", "DROPPED"
-	Target string // "KEYSPACE", "TABLE", "TYPE", "FUNCTION", "AGGREGATE"
+	Change   string // "CREATED", "UPDATED", "DROPPED"
+	Target   string // "KEYSPACE", "TABLE", "TYPE", "FUNCTION", "AGGREGATE"
 	Keyspace string
-	Table   string
+	Table    string
 }
 
 // PreparedResult contains prepared statement metadata.
 type PreparedResult struct {
-	QueryID    []byte
-	Metadata   *RowsMetadata
+	QueryID        []byte
+	Metadata       *RowsMetadata
 	ResultMetadata *RowsMetadata
 }
 
@@ -233,7 +233,7 @@ func (r *QueryRequest) Marshal(codec *Codec, w io.Writer) error {
 			return err
 		}
 	}
-	if (r.Flags & 0x08) != 0 && r.ResultPageID != nil {
+	if (r.Flags&0x08) != 0 && r.ResultPageID != nil {
 		if err := codec.WriteBytes(w, r.ResultPageID); err != nil {
 			return err
 		}
@@ -291,6 +291,9 @@ func (p *QueryParams) Marshal(codec *Codec, w io.Writer) error {
 	if p.SkipMetadata {
 		flags |= 0x01
 	}
+	if len(p.Values) > 0 {
+		flags |= 0x02
+	}
 	if p.PageSize > 0 {
 		flags |= 0x04
 	}
@@ -310,7 +313,7 @@ func (p *QueryParams) Marshal(codec *Codec, w io.Writer) error {
 		return err
 	}
 
-	if p.Values != nil {
+	if (flags & 0x02) != 0 {
 		if err := codec.WriteShort(w, int16(len(p.Values))); err != nil {
 			return err
 		}
@@ -456,7 +459,7 @@ func (r *ExecuteRequest) Marshal(codec *Codec, w io.Writer) error {
 			return err
 		}
 	}
-	if (r.Flags & 0x08) != 0 && r.ResultPageID != nil {
+	if (r.Flags&0x08) != 0 && r.ResultPageID != nil {
 		return codec.WriteBytes(w, r.ResultPageID)
 	}
 	return nil
@@ -497,6 +500,156 @@ func (r *ExecuteRequest) Unmarshal(codec *Codec, body []byte) error {
 			return err
 		}
 		r.ResultPageID = pid
+	}
+
+	return nil
+}
+
+// Marshal BatchRequest.
+func (r *BatchRequest) Marshal(codec *Codec, w io.Writer) error {
+	if err := codec.WriteByte(w, byte(r.Type)); err != nil {
+		return err
+	}
+	if err := codec.WriteShort(w, int16(len(r.Queries))); err != nil {
+		return err
+	}
+	for _, q := range r.Queries {
+		if err := codec.WriteByte(w, q.Kind); err != nil {
+			return err
+		}
+		switch q.Kind {
+		case 0:
+			if err := codec.WriteLongString(w, q.QueryString); err != nil {
+				return err
+			}
+		case 1:
+			if err := writeShortBytes(codec, w, q.QueryID); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("unsupported batch query kind: %d", q.Kind)
+		}
+		if err := codec.WriteShort(w, int16(len(q.Values))); err != nil {
+			return err
+		}
+		for _, v := range q.Values {
+			if err := codec.WriteBytes(w, v); err != nil {
+				return err
+			}
+		}
+	}
+	if err := codec.WriteShort(w, int16(r.Consistency)); err != nil {
+		return err
+	}
+
+	var flags byte
+	if r.SerialConsistency != 0 {
+		flags |= 0x10
+	}
+	if r.Timestamp != 0 {
+		flags |= 0x20
+	}
+	if err := codec.WriteByte(w, flags); err != nil {
+		return err
+	}
+	if (flags & 0x10) != 0 {
+		if err := codec.WriteShort(w, int16(r.SerialConsistency)); err != nil {
+			return err
+		}
+	}
+	if (flags & 0x20) != 0 {
+		if err := codec.WriteLong(w, r.Timestamp); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Unmarshal BatchRequest.
+func (r *BatchRequest) Unmarshal(codec *Codec, body []byte) error {
+	rd := bytes.NewReader(body)
+
+	batchType, err := codec.ReadByte(rd)
+	if err != nil {
+		return err
+	}
+	r.Type = BatchType(batchType)
+
+	count, err := codec.ReadShort(rd)
+	if err != nil {
+		return err
+	}
+	if count < 0 {
+		return fmt.Errorf("invalid batch query count: %d", count)
+	}
+	r.Queries = make([]BatchQuery, int(count))
+	for i := 0; i < int(count); i++ {
+		kind, readErr := codec.ReadByte(rd)
+		if readErr != nil {
+			return readErr
+		}
+		r.Queries[i].Kind = kind
+		switch kind {
+		case 0:
+			query, qErr := codec.ReadLongString(rd)
+			if qErr != nil {
+				return qErr
+			}
+			r.Queries[i].QueryString = query
+		case 1:
+			id, idErr := readShortBytes(codec, rd)
+			if idErr != nil {
+				return idErr
+			}
+			r.Queries[i].QueryID = id
+		default:
+			return fmt.Errorf("unsupported batch query kind: %d", kind)
+		}
+
+		valueCount, vErr := codec.ReadShort(rd)
+		if vErr != nil {
+			return vErr
+		}
+		if valueCount < 0 {
+			return fmt.Errorf("invalid batch value count: %d", valueCount)
+		}
+		if valueCount > 0 {
+			r.Queries[i].Values = make([][]byte, int(valueCount))
+			for j := 0; j < int(valueCount); j++ {
+				val, valErr := codec.ReadBytes(rd)
+				if valErr != nil {
+					return valErr
+				}
+				r.Queries[i].Values[j] = val
+			}
+		}
+	}
+
+	consistency, err := codec.ReadShort(rd)
+	if err != nil {
+		return err
+	}
+	r.Consistency = ConsistencyLevel(consistency)
+
+	if rd.Len() > 0 {
+		flags, flagErr := codec.ReadByte(rd)
+		if flagErr != nil {
+			return flagErr
+		}
+		if (flags & 0x10) != 0 {
+			sc, scErr := codec.ReadShort(rd)
+			if scErr != nil {
+				return scErr
+			}
+			r.SerialConsistency = ConsistencyLevel(sc)
+		}
+		if (flags & 0x20) != 0 {
+			ts, tsErr := codec.ReadLong(rd)
+			if tsErr != nil {
+				return tsErr
+			}
+			r.Timestamp = ts
+		}
 	}
 
 	return nil
@@ -567,7 +720,7 @@ func (r *RowsResult) Marshal(codec *Codec, w io.Writer) error {
 	}
 
 	// Column metadata.
-	if (flags & 0x01) != 0 && r.Metadata != nil {
+	if (flags&0x01) != 0 && r.Metadata != nil {
 		for _, col := range r.Metadata.Columns {
 			if err := codec.WriteString(w, col.Keyspace); err != nil {
 				return err
@@ -638,4 +791,30 @@ func (r *SchemaChangeResult) Marshal(codec *Codec, w io.Writer) error {
 		return codec.WriteString(w, r.Table)
 	}
 	return nil
+}
+
+func writeShortBytes(codec *Codec, w io.Writer, data []byte) error {
+	if data == nil {
+		return codec.WriteShort(w, -1)
+	}
+	if err := codec.WriteShort(w, int16(len(data))); err != nil {
+		return err
+	}
+	_, err := w.Write(data)
+	return err
+}
+
+func readShortBytes(codec *Codec, rd *bytes.Reader) ([]byte, error) {
+	length, err := codec.ReadShort(rd)
+	if err != nil {
+		return nil, err
+	}
+	if length < 0 {
+		return nil, nil
+	}
+	data := make([]byte, int(length))
+	if _, err := io.ReadFull(rd, data); err != nil {
+		return nil, err
+	}
+	return data, nil
 }

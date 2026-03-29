@@ -11,6 +11,7 @@ Applies CDC events to target cluster semantics with retry/backoff, deduplication
 
 **Out of scope:**
 - CDC event production and stream registration (CDC/control-plane features).
+- Local Raft/consensus details; xCluster only consumes stream/tablet/sequence contracts.
 
 ### Primary User Flow
 1. Scheduler or caller sends CDC event batch to xCluster loop.
@@ -41,6 +42,9 @@ Applies CDC events to target cluster semantics with retry/backoff, deduplication
 - `Applier.Apply(ctx, cdc.Event) error` must apply one event atomically from loop perspective.
 - `CheckpointStore.GetCheckpoint/AdvanceCheckpoint` is required and called per event.
 - Optional lag provider contract when store also implements `LagProvider`.
+- Ownership-transfer sequencing contract:
+  - source writers must preserve monotonic `(stream, tablet, sequence)` progression across ownership changes.
+  - regressed sequence numbers are treated as duplicates/no-ops at apply time.
 
 ### Dependencies
 **Internal modules:**
@@ -61,12 +65,11 @@ Applies CDC events to target cluster semantics with retry/backoff, deduplication
 - Inspect via `Loop.Stats(ctx)` and `Loop.Status(ctx)`.
 - Test coverage:
   - `apply_test.go`, `apply_integration_test.go`, `contract_stability_test.go`, `apply_benchmark_test.go`.
+- Ownership transfer regression coverage:
+  - `apply_test.go:TestApplyEventOwnershipTransferMonotonicSequenceGuarantee`.
 
 ### Risks and Notes
 - `appliedSet` grows in memory with each unique event key and has no eviction path in current implementation.
 - Checkpoint advancement is per-event, which can increase overhead for very large batches.
 
 Changes:
-
-- Keep xCluster explicitly optional and independent from local Raft HA assumptions in the simplified architecture.
-- Revalidate dedupe/checkpoint behavior for ownership changes when the source no longer relies on Raft leader semantics.

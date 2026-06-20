@@ -1,0 +1,675 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GoMultiDB Architecture And Flows</title>
+<script>
+  (function () {
+    const saved = localStorage.getItem("gomultidb-theme");
+    const dark = saved ? saved === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+    document.documentElement.classList.toggle("dark", dark);
+  })();
+</script>
+<style>
+  :root {
+    --bg: #f8f6ef;
+    --surface: #ffffff;
+    --surface-2: #eeebe1;
+    --surface-3: #e2ded1;
+    --ink: #171713;
+    --body: #3e403a;
+    --muted: #7b7d75;
+    --line: #c9c4b8;
+    --line-soft: #ded9cc;
+    --active: #cf5f3f;
+    --active-soft: rgba(207, 95, 63, 0.13);
+    --stable: #688653;
+    --stable-soft: rgba(104, 134, 83, 0.14);
+    --progress: #4f7f9e;
+    --progress-soft: rgba(79, 127, 158, 0.13);
+    --planned: #a2762e;
+    --planned-soft: rgba(162, 118, 46, 0.14);
+    --runtime: #805f95;
+    --runtime-soft: rgba(128, 95, 149, 0.12);
+    --shadow: rgba(24, 22, 18, 0.12);
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  html.dark {
+    --bg: #141411;
+    --surface: #1f201c;
+    --surface-2: #292a25;
+    --surface-3: #34352e;
+    --ink: #fbf8ed;
+    --body: #d7d2c5;
+    --muted: #929083;
+    --line: #44443b;
+    --line-soft: #313229;
+    --active: #ea8a68;
+    --active-soft: rgba(234, 138, 104, 0.15);
+    --stable: #9fba7b;
+    --stable-soft: rgba(159, 186, 123, 0.15);
+    --progress: #86b6d3;
+    --progress-soft: rgba(134, 182, 211, 0.14);
+    --planned: #d7b36a;
+    --planned-soft: rgba(215, 179, 106, 0.14);
+    --runtime: #c29ade;
+    --runtime-soft: rgba(194, 154, 222, 0.14);
+    --shadow: rgba(0, 0, 0, 0.28);
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--body);
+    font-family: var(--sans);
+    overflow: hidden;
+  }
+  .bar {
+    height: 68px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 10px 18px;
+    border-bottom: 1px solid var(--line-soft);
+    background: var(--bg);
+  }
+  .title { min-width: 245px; }
+  h1 {
+    margin: 0;
+    color: var(--ink);
+    font-size: 18px;
+    font-weight: 700;
+    letter-spacing: 0;
+  }
+  .subtitle {
+    margin-top: 2px;
+    color: var(--muted);
+    font: 11px var(--mono);
+    text-transform: uppercase;
+    letter-spacing: .06em;
+  }
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+  button {
+    font: 11px var(--mono);
+    border: 1px solid var(--line);
+    color: var(--muted);
+    background: transparent;
+    border-radius: 7px;
+    padding: 6px 9px;
+    cursor: pointer;
+  }
+  button:hover { color: var(--ink); border-color: var(--muted); }
+  button.on {
+    color: var(--bg);
+    background: var(--ink);
+    border-color: var(--ink);
+  }
+  .spacer { flex: 1; }
+  #themeToggle { flex: none; }
+  .stage {
+    position: relative;
+    height: calc(100vh - 68px);
+    min-height: 0;
+  }
+  svg {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+  .zone rect {
+    fill: var(--surface);
+    stroke: var(--line-soft);
+    stroke-width: 1.5;
+    rx: 16;
+  }
+  .zone.runtime rect { fill: var(--runtime-soft); stroke: var(--runtime); }
+  .zone.query rect { fill: var(--progress-soft); stroke: var(--progress); }
+  .zone.master rect { fill: var(--stable-soft); stroke: var(--stable); }
+  .zone.storage rect { fill: var(--surface-2); }
+  .zone.ops rect { fill: var(--planned-soft); stroke: var(--planned); }
+  .ztitle {
+    fill: var(--ink);
+    font: 700 13px var(--mono);
+    letter-spacing: .08em;
+    text-transform: uppercase;
+  }
+  .zsub {
+    fill: var(--muted);
+    font: 11px var(--mono);
+  }
+  .node { cursor: pointer; transition: opacity .18s ease; }
+  .node rect {
+    fill: var(--surface);
+    stroke: var(--line);
+    stroke-width: 1.5;
+    rx: 9;
+    transition: stroke .18s ease, fill .18s ease;
+  }
+  .node:hover rect, .node.sel rect { stroke: var(--active); stroke-width: 2.2; }
+  .node text { pointer-events: none; }
+  .node .n-title { fill: var(--ink); font: 700 14px var(--sans); }
+  .node .n-path { fill: var(--muted); font: 11px var(--mono); }
+  .node .n-note { fill: var(--body); font: 11.5px var(--sans); }
+  .node.stable rect { fill: var(--stable-soft); stroke: var(--stable); }
+  .node.progress rect { fill: var(--progress-soft); stroke: var(--progress); }
+  .node.planned rect { fill: var(--planned-soft); stroke: var(--planned); stroke-dasharray: 6 4; }
+  .node.runtime rect { fill: var(--runtime-soft); stroke: var(--runtime); }
+  .status text { font: 700 9px var(--mono); text-transform: uppercase; }
+  .status rect { rx: 5; stroke-width: 0; }
+  .status.stable rect { fill: var(--stable); }
+  .status.progress rect { fill: var(--progress); }
+  .status.planned rect { fill: var(--planned); }
+  .status text { fill: var(--bg); }
+  .edge {
+    stroke: var(--muted);
+    stroke-width: 1.6;
+    fill: none;
+    marker-end: url(#arrow-muted);
+    transition: opacity .18s ease, stroke .18s ease;
+  }
+  .edge.strong { stroke-width: 2.2; }
+  .edge.dashed { stroke-dasharray: 6 5; }
+  .elabel {
+    fill: var(--muted);
+    font: 10.5px var(--mono);
+    transition: opacity .18s ease, fill .18s ease;
+  }
+  .stage.flowing .node { opacity: .24; }
+  .stage.flowing .edge, .stage.flowing .elabel { opacity: .12; }
+  .stage.flowing .zone { opacity: .42; }
+  .stage.flowing .node.lit, .stage.flowing .zone.lit { opacity: 1; }
+  .stage.flowing .node.lit rect { stroke: var(--active); stroke-width: 2.2; }
+  .stage.flowing .edge.lit {
+    opacity: 1;
+    stroke: var(--active);
+    marker-start: url(#dot-active);
+    marker-end: url(#arrow-active);
+    stroke-dasharray: 9 6;
+    animation: march .9s linear infinite;
+  }
+  .stage.flowing .elabel.lit { opacity: 1; fill: var(--active); }
+  @keyframes march { to { stroke-dashoffset: -15; } }
+  @media (prefers-reduced-motion: reduce) {
+    .stage.flowing .edge.lit { animation: none; }
+  }
+  .panel {
+    position: absolute;
+    right: 16px;
+    bottom: 16px;
+    width: 375px;
+    max-width: calc(100vw - 32px);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 14px 15px;
+    box-shadow: 0 16px 38px var(--shadow);
+  }
+  .panel h2 {
+    margin: 0 0 3px;
+    color: var(--ink);
+    font-size: 17px;
+    line-height: 1.25;
+  }
+  .panel .meta {
+    margin-bottom: 8px;
+    color: var(--muted);
+    font: 11px var(--mono);
+  }
+  .panel p {
+    margin: 0 0 9px;
+    font-size: 12.8px;
+    line-height: 1.48;
+  }
+  .panel ul {
+    margin: 0;
+    padding-left: 18px;
+  }
+  .panel li {
+    margin: 4px 0;
+    font-size: 12.2px;
+    line-height: 1.35;
+  }
+  .panel code { font: 11px var(--mono); color: var(--active); }
+  .legend {
+    position: absolute;
+    left: 16px;
+    bottom: 16px;
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    max-width: 730px;
+    padding: 9px 10px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    box-shadow: 0 10px 28px var(--shadow);
+  }
+  .legend span {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--muted);
+    font: 11px var(--mono);
+  }
+  .sw {
+    width: 18px;
+    height: 10px;
+    border-radius: 3px;
+    border: 1px solid var(--line);
+    background: var(--surface);
+  }
+  .sw.stable { background: var(--stable-soft); border-color: var(--stable); }
+  .sw.progress { background: var(--progress-soft); border-color: var(--progress); }
+  .sw.planned { background: var(--planned-soft); border-color: var(--planned); border-style: dashed; }
+  .sw.runtime { background: var(--runtime-soft); border-color: var(--runtime); }
+  @media (max-width: 980px) {
+    body { overflow: auto; }
+    .bar { height: auto; align-items: flex-start; flex-direction: column; }
+    .stage { height: 900px; }
+    .panel, .legend { position: static; margin: 10px 16px; width: auto; }
+    svg { position: relative; min-width: 1280px; }
+  }
+</style>
+</head>
+<body>
+<div class="bar">
+  <div class="title">
+    <h1>GoMultiDB Architecture</h1>
+    <div class="subtitle">all layers · implemented and planned surfaces</div>
+  </div>
+  <div class="chips" id="chips">
+    <button class="on" data-flow="all">Everything</button>
+    <button data-flow="boot">Boot</button>
+    <button data-flow="query">Query</button>
+    <button data-flow="heartbeat">Heartbeat</button>
+    <button data-flow="snapshot">Snapshot</button>
+    <button data-flow="replication">Replication</button>
+    <button data-flow="tablet">Tablet lifecycle</button>
+    <button data-flow="txn">Txn commit</button>
+    <button data-flow="verify">Verify</button>
+  </div>
+  <div class="spacer"></div>
+  <button id="themeToggle">Theme</button>
+</div>
+
+<div class="stage" id="stage">
+<svg viewBox="0 0 1940 1120" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Deep GoMultiDB architecture and flow diagram">
+  <defs>
+    <marker id="arrow-muted" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" style="fill: var(--muted)"></path>
+    </marker>
+    <marker id="dot-muted" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="4.5" markerHeight="4.5">
+      <circle cx="5" cy="5" r="3" style="fill: var(--muted)"></circle>
+    </marker>
+    <marker id="arrow-active" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" style="fill: var(--active)"></path>
+    </marker>
+    <marker id="dot-active" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="5.5" markerHeight="5.5">
+      <circle cx="5" cy="5" r="3.5" style="fill: var(--active)"></circle>
+    </marker>
+  </defs>
+
+  <g class="zone" data-zone="clients"><rect x="28" y="86" width="190" height="780"></rect><text class="ztitle" x="48" y="116">Clients</text><text class="zsub" x="48" y="136">operators + SQL/CQL</text></g>
+  <g class="zone runtime" data-zone="runtime"><rect x="250" y="86" width="300" height="780"></rect><text class="ztitle" x="270" y="116">Runtime + Transport</text><text class="zsub" x="270" y="136">cmd, lifecycle, RPC</text></g>
+  <g class="zone query" data-zone="query"><rect x="590" y="86" width="305" height="780"></rect><text class="ztitle" x="610" y="116">Query Layer</text><text class="zsub" x="610" y="136">in progress front doors</text></g>
+  <g class="zone master" data-zone="master"><rect x="935" y="86" width="360" height="780"></rect><text class="ztitle" x="955" y="116">Master Control Plane</text><text class="zsub" x="955" y="136">catalog, heartbeat, snapshots</text></g>
+  <g class="zone storage" data-zone="storage"><rect x="1330" y="86" width="430" height="780"></rect><text class="ztitle" x="1350" y="116">Tablet + Storage</text><text class="zsub" x="1350" y="136">local data, txn, bootstrap</text></g>
+  <g class="zone master" data-zone="replication"><rect x="590" y="895" width="705" height="190"></rect><text class="ztitle" x="610" y="925">Replication</text><text class="zsub" x="610" y="945">CDC, scheduler, xCluster, observability</text></g>
+  <g class="zone ops" data-zone="ops"><rect x="28" y="895" width="522" height="190"></rect><text class="ztitle" x="48" y="925">Testing + Ops</text><text class="zsub" x="48" y="945">compose, harnesses, CI scripts</text></g>
+
+  <path id="e-client-master" class="edge" data-edge d="M195,198 C230,198 232,178 270,178"></path>
+  <path id="e-client-tserver" class="edge" data-edge d="M190,235 C245,248 1268,160 1360,218"></path>
+  <path id="e-client-sql" class="edge strong" data-edge d="M195,395 C405,395 460,250 615,250"></path>
+  <path id="e-client-cql" class="edge strong" data-edge d="M195,455 C395,455 475,395 615,395"></path>
+  <path id="e-runtime-rpc" class="edge" data-edge d="M400,350 L400,325"></path>
+  <path id="e-runtime-sql" class="edge" data-edge d="M515,372 C560,338 575,272 625,259"></path>
+  <path id="e-runtime-cql" class="edge" data-edge d="M515,405 C562,448 582,548 625,550"></path>
+  <path id="e-rpc-master" class="edge" data-edge d="M515,284 C685,204 790,200 970,200"></path>
+  <path id="e-rpc-snapshot" class="edge" data-edge d="M515,307 C705,365 800,538 970,550"></path>
+  <path id="e-sql-pggate" class="edge" data-edge d="M742,306 L742,355"></path>
+  <path id="e-pggate-dispatch" class="edge" data-edge d="M870,445 C1010,530 1190,555 1355,560"></path>
+  <path id="e-cql-engine" class="edge" data-edge d="M742,451 L742,498"></path>
+  <path id="e-cql-memory" class="edge dashed" data-edge d="M870,548 C1025,662 1195,707 1355,705"></path>
+  <path id="e-pggate-txn" class="edge" data-edge d="M870,410 C1015,395 1190,388 1355,395"></path>
+  <path id="e-txn-docdb" class="edge" data-edge d="M1515,427 L1515,490"></path>
+  <path id="e-docdb-rocks" class="edge" data-edge d="M1515,548 L1515,616"></path>
+  <path id="e-docdb-wal" class="edge" data-edge d="M1452,548 C1418,575 1408,613 1408,640"></path>
+  <path id="e-heartbeat" class="edge strong" data-edge d="M1355,228 C1275,210 1150,205 1252,255 C1304,280 1306,313 1260,330"></path>
+  <path id="e-heartbeat-catalog" class="edge" data-edge d="M1080,260 L1080,302"></path>
+  <path id="e-catalog-sys" class="edge" data-edge d="M1080,356 L1080,397"></path>
+  <path id="e-catalog-balance" class="edge" data-edge d="M1160,332 C1225,346 1240,527 1172,548"></path>
+  <path id="e-balance-directive" class="edge" data-edge d="M1270,580 C1315,575 1325,248 1355,240"></path>
+  <path id="e-snapshot-registry" class="edge" data-edge d="M1165,449 L1165,492"></path>
+  <path id="e-snapshot-tablet" class="edge strong" data-edge d="M1270,452 C1315,460 1328,783 1355,782"></path>
+  <path id="e-tablet-snap-store" class="edge" data-edge d="M1488,813 C1497,780 1510,715 1515,672"></path>
+  <path id="e-tablet-manager-meta" class="edge" data-edge d="M1515,268 L1515,322"></path>
+  <path id="e-partition-tablet" class="edge" data-edge d="M870,585 C1020,600 1180,600 1355,588"></path>
+  <path id="e-cdc-store" class="edge strong" data-edge d="M1640,650 C1690,820 1285,980 1060,980"></path>
+  <path id="e-cdc-service" class="edge" data-edge d="M1060,980 L1000,980"></path>
+  <path id="e-control-cdc" class="edge" data-edge d="M870,980 L735,980"></path>
+  <path id="e-control-xcluster" class="edge" data-edge d="M870,1018 L1005,1018"></path>
+  <path id="e-xcluster-checkpoint" class="edge" data-edge d="M1135,1012 C1230,995 1272,880 1205,792 C1130,694 1295,660 1355,650"></path>
+  <path id="e-observability" class="edge dashed" data-edge d="M1135,1018 C1210,1038 1232,1038 1260,1000"></path>
+  <path id="e-testing-runtime" class="edge" data-edge d="M505,980 C555,920 410,875 410,810"></path>
+  <path id="e-testing-compose" class="edge" data-edge d="M230,980 L350,980"></path>
+  <path id="e-ops-docker" class="edge" data-edge d="M410,950 C430,820 370,770 370,690"></path>
+  <path id="e-shared-runtime" class="edge dashed" data-edge d="M415,640 C470,685 540,682 615,660"></path>
+  <path id="e-shared-all" class="edge dashed" data-edge d="M870,660 C1045,742 1262,744 1355,705"></path>
+
+  <text class="elabel" data-label-for="e-client-master" x="220" y="184">operator/control RPC</text>
+  <text class="elabel" data-label-for="e-client-tserver" x="560" y="202">tserver process</text>
+  <text class="elabel" data-label-for="e-client-sql" x="360" y="304">SQL listener / subprocess option</text>
+  <text class="elabel" data-label-for="e-client-cql" x="374" y="438">CQL binary protocol</text>
+  <text class="elabel" data-label-for="e-pggate-dispatch" x="1015" y="520">resolver + dispatcher</text>
+  <text class="elabel" data-label-for="e-cql-memory" x="1035" y="681">local scaffold engine today</text>
+  <text class="elabel" data-label-for="e-heartbeat" x="1258" y="207">TSHeartbeat</text>
+  <text class="elabel" data-label-for="e-balance-directive" x="1258" y="410">tablet actions</text>
+  <text class="elabel" data-label-for="e-snapshot-tablet" x="1258" y="632">snapshot RPC fan-out</text>
+  <text class="elabel" data-label-for="e-cdc-store" x="1420" y="942">events + checkpoints</text>
+  <text class="elabel" data-label-for="e-testing-runtime" x="430" y="900">in-process cluster</text>
+
+  <g class="node stable" data-node="client" transform="translate(55 170)"><rect width="135" height="82"></rect><text class="n-title" x="14" y="25">Operators</text><text class="n-path" x="14" y="46">scripts / RPC</text><text class="n-note" x="14" y="66">compose + smoke</text></g>
+  <g class="node progress" data-node="sql-client" transform="translate(55 365)"><rect width="135" height="82"></rect><text class="n-title" x="14" y="25">SQL Clients</text><text class="n-path" x="14" y="46">Postgres mode</text><text class="n-note" x="14" y="66">front door scaffold</text></g>
+  <g class="node progress" data-node="cql-client" transform="translate(55 450)"><rect width="135" height="82"></rect><text class="n-title" x="14" y="25">CQL Clients</text><text class="n-path" x="14" y="46">Cassandra wire</text><text class="n-note" x="14" y="66">framing + sessions</text></g>
+
+  <g class="node runtime stable" data-node="cmd-master" transform="translate(285 160)"><rect width="230" height="70"></rect><text class="n-title" x="14" y="24">cmd/master</text><text class="n-path" x="14" y="44">cmd/master/main.go</text><text class="n-note" x="14" y="61">catalog, heartbeat, snapshots</text></g>
+  <g class="node runtime stable" data-node="rpc" transform="translate(285 255)"><rect width="230" height="70"></rect><text class="n-title" x="14" y="24">RPC Server / Client</text><text class="n-path" x="14" y="44">internal/rpc</text><text class="n-note" x="14" y="61">JSON RPC + contract version</text></g>
+  <g class="node runtime stable" data-node="runtime" transform="translate(285 350)"><rect width="230" height="78"></rect><text class="n-title" x="14" y="24">Runtime</text><text class="n-path" x="14" y="44">internal/server</text><text class="n-note" x="14" y="62">start SQL, CQL, RPC; stop phases</text></g>
+  <g class="node runtime stable" data-node="ping" transform="translate(285 455)"><rect width="230" height="64"></rect><text class="n-title" x="14" y="24">Ping Service</text><text class="n-path" x="14" y="44">internal/services/ping</text></g>
+  <g class="node stable" data-node="shared" transform="translate(285 610)"><rect width="230" height="92"></rect><text class="n-title" x="14" y="24">Shared Platform</text><text class="n-path" x="14" y="44">internal/common, platform</text><text class="n-note" x="14" y="62">errors, ids, versions</text><text class="n-note" x="14" y="78">idempotency, fs, memory</text></g>
+
+  <g class="node progress" data-node="sql" transform="translate(625 220)"><rect width="235" height="78"></rect><text class="n-title" x="14" y="24">SQL Control</text><text class="n-path" x="14" y="44">internal/query/sql</text><text class="n-note" x="14" y="62">managed coordinator + fallback</text></g>
+  <g class="node progress" data-node="pggate" transform="translate(625 355)"><rect width="235" height="100"></rect><text class="n-title" x="14" y="24">PgGate Bridge</text><text class="n-path" x="14" y="44">internal/query/pggate</text><text class="n-note" x="14" y="62">sessions, queued writes</text><text class="n-note" x="14" y="80">idempotent exec, dispatch hooks</text></g>
+  <g class="node progress" data-node="cql" transform="translate(625 505)"><rect width="235" height="92"></rect><text class="n-title" x="14" y="24">CQL Gateway</text><text class="n-path" x="14" y="44">internal/query/cql</text><text class="n-note" x="14" y="62">protocol listener, prepared cache</text><text class="n-note" x="14" y="78">SELECT/INSERT/UPDATE/DELETE engine</text></g>
+  <g class="node planned" data-node="real-query" transform="translate(625 650)"><rect width="235" height="78"></rect><text class="n-title" x="14" y="24">Full Query Execution</text><text class="n-path" x="14" y="44">planned hardening</text><text class="n-note" x="14" y="62">real planner/storage integration</text></g>
+
+  <g class="node stable" data-node="heartbeat" transform="translate(970 160)"><rect width="285" height="85"></rect><text class="n-title" x="14" y="24">Heartbeat Service</text><text class="n-path" x="14" y="44">internal/master/heartbeat</text><text class="n-note" x="14" y="62">TS descriptors, sequence checks</text></g>
+  <g class="node stable" data-node="catalog" transform="translate(970 300)"><rect width="285" height="82"></rect><text class="n-title" x="14" y="24">Catalog Manager</text><text class="n-path" x="14" y="44">internal/master/catalog</text><text class="n-note" x="14" y="62">tables, tablets, req dedupe</text></g>
+  <g class="node stable" data-node="syscatalog" transform="translate(970 405)"><rect width="285" height="70"></rect><text class="n-title" x="14" y="24">SysCatalog Store</text><text class="n-path" x="14" y="44">internal/master/syscatalog</text><text class="n-note" x="14" y="61">entity/* and reqlog/* keys</text></g>
+  <g class="node stable" data-node="snapshot-master" transform="translate(970 505)"><rect width="285" height="92"></rect><text class="n-title" x="14" y="24">Snapshot Coordinator</text><text class="n-path" x="14" y="44">internal/master/snapshot</text><text class="n-note" x="14" y="62">create/delete/restore state machine</text><text class="n-note" x="14" y="78">tablet RPC fan-out</text></g>
+  <g class="node stable" data-node="balancer" transform="translate(970 635)"><rect width="285" height="85"></rect><text class="n-title" x="14" y="24">Balancer Planner</text><text class="n-path" x="14" y="44">internal/master/balancer</text><text class="n-note" x="14" y="62">RF repair + primary transfers</text></g>
+
+  <g class="node stable" data-node="cmd-tserver" transform="translate(1360 180)"><rect width="345" height="76"></rect><text class="n-title" x="14" y="24">cmd/tserver</text><text class="n-path" x="14" y="44">cmd/tserver/main.go</text><text class="n-note" x="14" y="62">RPC, snapshot service, runtime</text></g>
+  <g class="node stable" data-node="tablet-manager" transform="translate(1360 300)"><rect width="345" height="98"></rect><text class="n-title" x="14" y="24">Tablet Manager</text><text class="n-path" x="14" y="44">internal/tablet</text><text class="n-note" x="14" y="62">create, split, tombstone, delete</text><text class="n-note" x="14" y="80">owner epoch transfer semantics</text></g>
+  <g class="node stable" data-node="txn" transform="translate(1360 430)"><rect width="345" height="88"></rect><text class="n-title" x="14" y="24">Transaction Coordinator</text><text class="n-path" x="14" y="44">internal/txn</text><text class="n-note" x="14" y="62">records, conflict resolver, wait queue</text></g>
+  <g class="node stable" data-node="docdb" transform="translate(1360 550)"><rect width="345" height="86"></rect><text class="n-title" x="14" y="24">DocDB + Intents</text><text class="n-path" x="14" y="44">internal/docdb</text><text class="n-note" x="14" y="62">MVCC versions, intents, read at HT</text></g>
+  <g class="node stable" data-node="storage" transform="translate(1360 665)"><rect width="160" height="78"></rect><text class="n-title" x="14" y="24">Rocks Facade</text><text class="n-path" x="14" y="44">storage/rocks</text><text class="n-note" x="14" y="62">memory KV today</text></g>
+  <g class="node stable" data-node="wal" transform="translate(1545 665)"><rect width="160" height="78"></rect><text class="n-title" x="14" y="24">WAL</text><text class="n-path" x="14" y="44">internal/wal</text><text class="n-note" x="14" y="62">segments + replay</text></g>
+  <g class="node stable" data-node="tablet-snapshot" transform="translate(1360 775)"><rect width="345" height="85"></rect><text class="n-title" x="14" y="24">Tablet Snapshot + Bootstrap</text><text class="n-path" x="14" y="44">tablet/snapshot, remotebootstrap</text><text class="n-note" x="14" y="62">snapshot keys, chunks, CRC, installer</text></g>
+
+  <g class="node stable" data-node="cdc" transform="translate(615 965)"><rect width="160" height="78"></rect><text class="n-title" x="14" y="24">CDC Store</text><text class="n-path" x="14" y="44">replication/cdc</text><text class="n-note" x="14" y="62">events + checkpoints</text></g>
+  <g class="node stable" data-node="controlplane" transform="translate(805 965)"><rect width="170" height="78"></rect><text class="n-title" x="14" y="24">Scheduler</text><text class="n-path" x="14" y="44">controlplane</text><text class="n-note" x="14" y="62">jobs, streams, caps</text></g>
+  <g class="node stable" data-node="xcluster" transform="translate(1005 965)"><rect width="170" height="78"></rect><text class="n-title" x="14" y="24">xCluster Loop</text><text class="n-path" x="14" y="44">xcluster/apply.go</text><text class="n-note" x="14" y="62">retry, dedupe, apply</text></g>
+  <g class="node stable" data-node="repl-obs" transform="translate(1198 955)"><rect width="70" height="95"></rect><text class="n-title" x="12" y="25">Obs</text><text class="n-path" x="12" y="45">admin</text><text class="n-note" x="12" y="65">metrics</text></g>
+
+  <g class="node stable" data-node="compose" transform="translate(55 965)"><rect width="160" height="78"></rect><text class="n-title" x="14" y="24">Compose</text><text class="n-path" x="14" y="44">docker-compose</text><text class="n-note" x="14" y="62">master + 3 tservers</text></g>
+  <g class="node stable" data-node="scripts" transform="translate(245 965)"><rect width="160" height="78"></rect><text class="n-title" x="14" y="24">Scripts</text><text class="n-path" x="14" y="44">scripts/*.ps1</text><text class="n-note" x="14" y="62">quick, standard, CI</text></g>
+  <g class="node stable" data-node="tests" transform="translate(425 965)"><rect width="100" height="78"></rect><text class="n-title" x="14" y="24">Tests</text><text class="n-path" x="14" y="44">tests/*</text><text class="n-note" x="14" y="62">infra + stress</text></g>
+
+  <g class="status stable" transform="translate(80 835)"><rect width="80" height="20"></rect><text x="12" y="14">stable</text></g>
+  <g class="status progress" transform="translate(625 835)"><rect width="90" height="20"></rect><text x="12" y="14">in progress</text></g>
+  <g class="status planned" transform="translate(725 835)"><rect width="78" height="20"></rect><text x="12" y="14">planned</text></g>
+</svg>
+
+<div class="legend">
+  <span><i class="sw stable"></i>Stable in design matrix</span>
+  <span><i class="sw progress"></i>In progress</span>
+  <span><i class="sw planned"></i>Not done / planned hardening</span>
+  <span><i class="sw runtime"></i>Runtime boundary</span>
+  <span>Click any node; choose a flow to animate request paths.</span>
+</div>
+
+<aside class="panel" id="detail">
+  <h2>GoMultiDB Stack</h2>
+  <div class="meta">design/index.md + current package layout</div>
+  <p>A two-role distributed database prototype: `master` owns metadata and coordination; `tserver` owns query-facing and data-facing work. The dashed planned node marks the biggest unfinished integration: full query planning/execution over real tablet storage.</p>
+  <ul>
+    <li>Stable layers: runtime, RPC, master control plane, tablet lifecycle, replication, transactions, storage, testing.</li>
+    <li>In progress: CQL gateway, SQL control, PgGate bridge.</li>
+    <li>Explicit gaps: production RocksDB wiring, consensus/quorum durability, durable txn coordinator state, full SQL/CQL planner.</li>
+  </ul>
+</aside>
+</div>
+
+<script>
+const details = {
+  client: ["Operators", "README.md, scripts/*.ps1", "Operators drive compose, smoke, integration, stress, and CI-style flows. Runtime-level APIs are exposed through RPC services.", ["compose-up/down", "compose-smoke/status", "ci-run and stress-report"]],
+  "sql-client": ["SQL Clients", "query-sql-control.md", "SQL is represented by a managed coordinator with an optional postgres subprocess path and local fallback.", ["Status: In Progress", "Process mode can be required or fallback to coordinator", "PgGate is the deeper execution bridge"]],
+  "cql-client": ["CQL Clients", "query-cql-gateway.md", "CQL has protocol framing, sessions, prepared cache behavior, and a simple DML execution engine.", ["Status: In Progress", "Binary listener + message protocol", "Execution remains scaffold-oriented"]],
+  "cmd-master": ["cmd/master", "cmd/master/main.go", "Master wires RPC, ping, rocks-backed catalog store, heartbeat, tablet RPC registry, runtime, and snapshot service.", ["Single-master primary mode is explicit", "Catalog and heartbeat are set primary", "Snapshot coordinator is registered when enabled"]],
+  rpc: ["RPC Server / Client", "internal/rpc", "HTTP JSON-RPC transport with request envelope contract checks and service registration.", ["Strict contract validation can be enabled", "Ping, heartbeat, snapshot services register here", "Shared errors are normalized"]],
+  runtime: ["Runtime", "internal/server/runtime.go", "Owns process lifecycle. It starts RPC first, then SQL, then CQL; shutdown stops query coordinators before RPC.", ["Runtime creates SQL managed coordinator and local CQL server", "Snapshot coordinator is attached when configured", "Graceful shutdown tracks phases"]],
+  ping: ["Ping Service", "internal/services/ping", "Minimal RPC service used for liveness and transport smoke coverage.", ["Registered by both master and tserver", "Useful for compose/integration health"]],
+  shared: ["Shared Platform", "internal/common, internal/platform", "Cross-cutting contracts used throughout the stack: typed IDs, version validation, DB errors, idempotency, filesystem and memory guards.", ["DBError carries retryability", "RequestEnvelope contract versioning", "TTL idempotency store backs catalog and PgGate paths"]],
+  sql: ["SQL Control", "internal/query/sql", "Starts/stops SQL control, validates process config, and can wrap a managed postgres subprocess with coordinator fallback.", ["Status: In Progress", "Health reports whether coordinator is started", "Full query engine integration is not complete"]],
+  pggate: ["PgGate Bridge", "internal/query/pggate", "Session and transaction bridge for write/read operations. It queues writes, handles request-id idempotency, and dispatches reads when resolver/dispatcher are injected.", ["Status: In Progress", "Read/write restart conflict counters", "Real dispatch requires configured tablet dispatcher and partition resolver"]],
+  cql: ["CQL Gateway", "internal/query/cql", "CQL protocol scaffolding plus a local execution engine that parses core statement kinds and tracks simple table row counts.", ["Status: In Progress", "SELECT, INSERT, UPDATE, DELETE support", "Current engine is local scaffold rather than full storage path"]],
+  "real-query": ["Full Query Execution", "planned integration", "The main not-done feature across query surfaces: complete SQL/CQL planning, routing, storage dispatch, and distributed result semantics.", ["Needs real planner and tablet routing", "Needs complete PgGate/CQL storage integration", "Would graduate query layer from scaffold to database behavior"]],
+  heartbeat: ["Heartbeat Service", "internal/master/heartbeat", "Tracks tserver descriptors and tablet reports, rejects stale sequence numbers, and emits tablet actions.", ["Stable", "Updates TSManager", "Feeds catalog reconcile sink", "Returns create/delete tablet directives"]],
+  catalog: ["Catalog Manager", "internal/master/catalog", "Primary-only catalog mutation surface for tables and tablets with request dedupe and durable syscatalog apply/reload.", ["Stable", "Create/alter/delete tables", "Create tablets", "DirectivePlanner works from placement views"]],
+  syscatalog: ["SysCatalog Store", "internal/master/syscatalog", "Durable metadata keyspace over the rocks facade. Stores catalog entities and idempotency request logs.", ["Stable", "entity/* keys", "reqlog/* keys", "Snapshot reload after accepted mutation"]],
+  "snapshot-master": ["Master Snapshot Coordinator", "internal/master/snapshot", "Distributed snapshot orchestration over tablet RPC endpoints. Handles create/delete/restore records and bounded fan-out.", ["Stable", "Uses TabletRPCRegistry", "Persists snapshot/<id> metadata", "Transitions CREATING/COMPLETE/DELETING/RESTORING"]],
+  balancer: ["Balancer Planner", "internal/master/balancer", "Computes add replica, remove replica, and primary transfer actions from a supplied cluster placement snapshot.", ["Stable", "Cooldown map is in memory", "Planner emits actions; caller executes them", "No term/lease arbitration here"]],
+  "cmd-tserver": ["cmd/tserver", "cmd/tserver/main.go", "Tserver wires RPC, ping, tablet snapshot service, rocks store, and the common runtime.", ["Stable", "Registers tablet snapshot RPC service", "Runs SQL/CQL runtime components", "Acts as data/query/replication node role"]],
+  "tablet-manager": ["Tablet Manager", "internal/tablet", "Controls create, open, delete, split, remote bootstrap transitions, and two-phase ownership transfer with owner epochs.", ["Stable", "Persists .meta files", "Recovers incomplete startup states as FAILED", "Partition map handles key-range routing"]],
+  txn: ["Transaction Coordinator", "internal/txn", "Process-local transaction records, conflict resolver policy, intent apply/remove loops, wait queue, and deadlock detector.", ["Stable", "State is not restart-durable", "Conflict resolver can abort/retry/wait", "Commit failure aborts and returns retryable unavailable"]],
+  docdb: ["DocDB + Intents", "internal/docdb", "Local MVCC engine over the rocks facade. It writes versioned keys, records intents, applies/removes intents, and reads at hybrid time.", ["Stable", "RegularDB and IntentsDB key layouts", "Cross-node guarantees live above this layer", "No consensus replication in this package"]],
+  storage: ["Rocks Facade", "internal/storage/rocks", "In-memory Rocks-style KV facade with write batches and iterators. It is shared by catalog, snapshots, DocDB, and CDC metadata.", ["Stable scaffold", "Production RocksDB binding is not present", "Multiple modules use prefixed keyspaces"]],
+  wal: ["WAL", "internal/wal", "Local append log with segment files, append callbacks, index lookup, and replay on startup.", ["Stable", "Durability is local to node", "Not coupled to quorum commit"]],
+  "tablet-snapshot": ["Tablet Snapshot + Bootstrap", "internal/tablet/snapshot, internal/tablet/remotebootstrap", "Tablet-local snapshot copy/restore plus remote bootstrap sessions with manifests, chunk transfer, CRC checks, and installer contract.", ["Stable", "Snapshot data stored under snapshot/data/*", "Sessions are in-memory", "Destination aborts source session on failure"]],
+  cdc: ["CDC Store / Service", "internal/replication/cdc", "Stores events, exposes stream GetChanges, advances checkpoints, computes lag, handles retention/bootstrap state, and split remapping.", ["Stable", "Stream metadata is service-local", "Checkpoint persistence is file/KV-oriented", "Feeds xCluster and control plane"]],
+  controlplane: ["Replication Scheduler", "internal/replication/controlplane", "Ticks running jobs over running streams, polls CDC after checkpoint, applies in-flight caps, and handles ownership epoch throttling.", ["Stable", "Batch size shrinks after ownership epoch bump", "Fault injection hooks support tests", "Registry snapshots streams/jobs"]],
+  xcluster: ["xCluster Apply Loop", "internal/replication/xcluster", "Applies CDC events with retry/backoff, duplicate detection, checkpoint advancement, and status stats.", ["Stable", "Dedupe is process-memory", "Checkpoint store is authoritative for resume", "Lag provider is optional"]],
+  "repl-obs": ["Replication Observability", "internal/replication/observability", "Metrics registry, health/admin handlers, and ownership transition reporting for replication surfaces.", ["Stable", "Admin handlers expose operational state", "Used by debugging and status flows"]],
+  compose: ["Compose", "docker-compose.yml", "Local cluster shape: one master and multiple tservers, with optional stress/fault profiles.", ["Stable tooling", "PowerShell scripts wrap compose", "Docker availability is an external dependency"]],
+  scripts: ["Automation Scripts", "scripts/*.ps1", "Developer and CI-style workflows for quick tests, standard tests, compose smoke, infra integration, stress runs, and reports.", ["Stable", "Lint stage is a placeholder", "PowerShell-first workflow"]],
+  tests: ["Testing Infrastructure", "internal/testing, tests/*", "In-process cluster/fault/invariant/workload helpers plus compose-backed integration and stress suites.", ["Stable", "Build tags: integration, stress", "Artifacts capture logs and JSON summaries"]]
+};
+
+const edgeEndpoints = {
+  "e-client-master": ["client", "cmd-master"],
+  "e-client-tserver": ["client", "cmd-tserver"],
+  "e-client-sql": ["sql-client", "sql"],
+  "e-client-cql": ["cql-client", "cql"],
+  "e-runtime-rpc": ["runtime", "rpc"],
+  "e-runtime-sql": ["runtime", "sql"],
+  "e-runtime-cql": ["runtime", "cql"],
+  "e-rpc-master": ["rpc", "heartbeat"],
+  "e-rpc-snapshot": ["rpc", "snapshot-master"],
+  "e-sql-pggate": ["sql", "pggate"],
+  "e-pggate-dispatch": ["pggate", "tablet-manager"],
+  "e-cql-engine": ["cql", "real-query"],
+  "e-cql-memory": ["cql", "docdb"],
+  "e-pggate-txn": ["pggate", "txn"],
+  "e-txn-docdb": ["txn", "docdb"],
+  "e-docdb-rocks": ["docdb", "storage"],
+  "e-docdb-wal": ["docdb", "wal"],
+  "e-heartbeat": ["cmd-tserver", "heartbeat"],
+  "e-heartbeat-catalog": ["heartbeat", "catalog"],
+  "e-catalog-sys": ["catalog", "syscatalog"],
+  "e-catalog-balance": ["catalog", "balancer"],
+  "e-balance-directive": ["balancer", "tablet-manager"],
+  "e-snapshot-registry": ["snapshot-master", "catalog"],
+  "e-snapshot-tablet": ["snapshot-master", "tablet-snapshot"],
+  "e-tablet-snap-store": ["tablet-snapshot", "storage"],
+  "e-tablet-manager-meta": ["cmd-tserver", "tablet-manager"],
+  "e-partition-tablet": ["real-query", "tablet-manager"],
+  "e-cdc-store": ["docdb", "cdc"],
+  "e-cdc-service": ["xcluster", "cdc"],
+  "e-control-cdc": ["controlplane", "cdc"],
+  "e-control-xcluster": ["controlplane", "xcluster"],
+  "e-xcluster-checkpoint": ["xcluster", "storage"],
+  "e-observability": ["xcluster", "repl-obs"],
+  "e-testing-runtime": ["tests", "runtime"],
+  "e-testing-compose": ["compose", "scripts"],
+  "e-ops-docker": ["scripts", "shared"],
+  "e-shared-runtime": ["shared", "real-query"],
+  "e-shared-all": ["shared", "docdb"]
+};
+
+function nodeBox(id) {
+  const node = document.querySelector(`[data-node="${id}"]`);
+  const rect = node?.querySelector("rect");
+  if (!node || !rect) return null;
+  const match = /translate\(([-0-9.]+)[ ,]([-0-9.]+)\)/.exec(node.getAttribute("transform") || "");
+  const x = match ? Number(match[1]) : 0;
+  const y = match ? Number(match[2]) : 0;
+  return {
+    x,
+    y,
+    w: Number(rect.getAttribute("width")),
+    h: Number(rect.getAttribute("height"))
+  };
+}
+
+function edgePath(from, to) {
+  const a = nodeBox(from);
+  const b = nodeBox(to);
+  if (!a || !b) return "";
+
+  const acx = a.x + a.w / 2;
+  const acy = a.y + a.h / 2;
+  const bcx = b.x + b.w / 2;
+  const bcy = b.y + b.h / 2;
+  const dx = bcx - acx;
+  const dy = bcy - acy;
+
+  let sx, sy, tx, ty;
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    sx = dx >= 0 ? a.x + a.w : a.x;
+    sy = acy;
+    tx = dx >= 0 ? b.x : b.x + b.w;
+    ty = bcy;
+    const bend = Math.max(42, Math.min(150, Math.abs(tx - sx) * 0.42));
+    const c1x = sx + (dx >= 0 ? bend : -bend);
+    const c2x = tx - (dx >= 0 ? bend : -bend);
+    return `M${sx},${sy} C${c1x},${sy} ${c2x},${ty} ${tx},${ty}`;
+  }
+
+  sx = acx;
+  sy = dy >= 0 ? a.y + a.h : a.y;
+  tx = bcx;
+  ty = dy >= 0 ? b.y : b.y + b.h;
+  const bend = Math.max(36, Math.min(120, Math.abs(ty - sy) * 0.42));
+  const c1y = sy + (dy >= 0 ? bend : -bend);
+  const c2y = ty - (dy >= 0 ? bend : -bend);
+  return `M${sx},${sy} C${sx},${c1y} ${tx},${c2y} ${tx},${ty}`;
+}
+
+function layoutEdges() {
+  Object.entries(edgeEndpoints).forEach(([edgeID, endpoints]) => {
+    const edge = document.getElementById(edgeID);
+    if (!edge) return;
+    const d = edgePath(endpoints[0], endpoints[1]);
+    if (d) edge.setAttribute("d", d);
+  });
+}
+
+const flows = {
+  all: { nodes: [], edges: [], zones: [], text: "Everything" },
+  boot: {
+    nodes: ["client", "cmd-master", "cmd-tserver", "rpc", "runtime", "sql", "cql", "ping", "storage", "snapshot-master"],
+    edges: ["e-client-master", "e-client-tserver", "e-runtime-rpc", "e-runtime-sql", "e-runtime-cql", "e-rpc-master", "e-rpc-snapshot"],
+    zones: ["clients", "runtime", "query", "master", "storage"],
+    text: "Boot: CLI entrypoints configure runtime, register RPC services, start RPC, then query coordinators."
+  },
+  query: {
+    nodes: ["sql-client", "cql-client", "runtime", "sql", "pggate", "cql", "real-query", "txn", "tablet-manager", "docdb", "storage", "wal", "shared"],
+    edges: ["e-client-sql", "e-client-cql", "e-runtime-sql", "e-runtime-cql", "e-sql-pggate", "e-pggate-dispatch", "e-cql-engine", "e-cql-memory", "e-pggate-txn", "e-txn-docdb", "e-docdb-rocks", "e-docdb-wal", "e-partition-tablet", "e-shared-all"],
+    zones: ["clients", "query", "storage", "runtime"],
+    text: "Query: SQL/CQL front doors exist, but complete planner and storage-backed distributed execution are still the main unfinished surface."
+  },
+  heartbeat: {
+    nodes: ["cmd-tserver", "rpc", "heartbeat", "catalog", "syscatalog", "balancer", "tablet-manager"],
+    edges: ["e-heartbeat", "e-heartbeat-catalog", "e-catalog-sys", "e-catalog-balance", "e-balance-directive", "e-rpc-master"],
+    zones: ["runtime", "master", "storage"],
+    text: "Heartbeat: tservers report tablet state; master reconciles placement and returns create/delete tablet directives."
+  },
+  snapshot: {
+    nodes: ["client", "cmd-master", "rpc", "snapshot-master", "catalog", "syscatalog", "tablet-snapshot", "storage", "cmd-tserver"],
+    edges: ["e-client-master", "e-rpc-snapshot", "e-snapshot-registry", "e-snapshot-tablet", "e-tablet-snap-store", "e-catalog-sys"],
+    zones: ["clients", "runtime", "master", "storage"],
+    text: "Snapshot: master persists snapshot records and fans out create/delete/restore RPCs to tablet snapshot services."
+  },
+  replication: {
+    nodes: ["cdc", "controlplane", "xcluster", "repl-obs", "docdb", "storage", "wal", "shared"],
+    edges: ["e-cdc-store", "e-cdc-service", "e-control-cdc", "e-control-xcluster", "e-xcluster-checkpoint", "e-observability", "e-docdb-rocks", "e-docdb-wal"],
+    zones: ["replication", "storage"],
+    text: "Replication: CDC stores events/checkpoints; scheduler polls running streams/jobs; xCluster applies with retry, dedupe, and checkpoint advancement."
+  },
+  tablet: {
+    nodes: ["balancer", "heartbeat", "catalog", "tablet-manager", "tablet-snapshot", "docdb", "storage", "wal", "cmd-tserver"],
+    edges: ["e-heartbeat", "e-catalog-balance", "e-balance-directive", "e-tablet-manager-meta", "e-tablet-snap-store", "e-docdb-rocks"],
+    zones: ["master", "storage"],
+    text: "Tablet lifecycle: master plans placement; tablet manager persists lifecycle markers, owns split/delete/bootstrap transitions, and updates routing."
+  },
+  txn: {
+    nodes: ["pggate", "txn", "docdb", "storage", "wal", "shared"],
+    edges: ["e-pggate-txn", "e-txn-docdb", "e-docdb-rocks", "e-docdb-wal", "e-shared-all"],
+    zones: ["query", "storage"],
+    text: "Txn commit: PgGate creates/uses sessions; txn manager applies or removes DocDB intents; storage guarantees are local, not consensus-backed."
+  },
+  verify: {
+    nodes: ["compose", "scripts", "tests", "runtime", "rpc", "cdc", "controlplane", "xcluster", "sql", "cql", "shared"],
+    edges: ["e-testing-compose", "e-testing-runtime", "e-ops-docker", "e-control-cdc", "e-control-xcluster"],
+    zones: ["ops", "runtime", "query", "replication"],
+    text: "Verify: quick/standard scripts, in-process harnesses, compose-backed integration, and stress suites exercise runtime, query, and replication paths."
+  }
+};
+
+const stage = document.getElementById("stage");
+const detail = document.getElementById("detail");
+
+function setDetail(key) {
+  const d = details[key];
+  if (!d) return;
+  document.querySelectorAll("[data-node]").forEach(n => n.classList.toggle("sel", n.dataset.node === key));
+  detail.innerHTML = `<h2>${d[0]}</h2><div class="meta">${d[1]}</div><p>${d[2]}</p><ul>${d[3].map(item => `<li>${item}</li>`).join("")}</ul>`;
+}
+
+function clearFlowClasses() {
+  stage.classList.remove("flowing");
+  document.querySelectorAll(".lit").forEach(el => el.classList.remove("lit"));
+}
+
+function setFlow(name) {
+  document.querySelectorAll("#chips button").forEach(btn => btn.classList.toggle("on", btn.dataset.flow === name));
+  clearFlowClasses();
+  if (name === "all") {
+    detail.querySelector(".meta").textContent = "design/index.md + current package layout";
+    return;
+  }
+  const f = flows[name];
+  stage.classList.add("flowing");
+  const activeNodes = new Set(f.nodes);
+  f.edges.forEach(id => (edgeEndpoints[id] || []).forEach(node => activeNodes.add(node)));
+  activeNodes.forEach(id => document.querySelector(`[data-node="${id}"]`)?.classList.add("lit"));
+  f.zones.forEach(id => document.querySelector(`[data-zone="${id}"]`)?.classList.add("lit"));
+  f.edges.forEach(id => {
+    document.getElementById(id)?.classList.add("lit");
+    document.querySelector(`[data-label-for="${id}"]`)?.classList.add("lit");
+  });
+  detail.innerHTML = `<h2>${name[0].toUpperCase() + name.slice(1)} Flow</h2><div class="meta">animated path</div><p>${f.text}</p><ul><li>Highlighted nodes are active participants.</li><li>Moving dashed edges show the primary path.</li><li>Dimmed areas are supporting or inactive for this flow.</li></ul>`;
+}
+
+document.querySelectorAll("[data-node]").forEach(node => node.addEventListener("click", () => setDetail(node.dataset.node)));
+document.querySelectorAll("#chips button").forEach(btn => btn.addEventListener("click", () => setFlow(btn.dataset.flow)));
+document.getElementById("themeToggle").addEventListener("click", () => {
+  const dark = !document.documentElement.classList.contains("dark");
+  document.documentElement.classList.toggle("dark", dark);
+  localStorage.setItem("gomultidb-theme", dark ? "dark" : "light");
+});
+layoutEdges();
+</script>
+</body>
+</html>

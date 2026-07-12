@@ -1,0 +1,177 @@
+// Command master is the GoMultiDB v2 master-server entry point. It parses
+// node identity and network-bind flags, assembles a server/server.Runtime
+// around an infra/rpc.Server, an infra/storage/rocks.Store, and the
+// server/master/{catalog,heartbeat,registry,snapshot,syscatalog} stack,
+// registers the ping, heartbeat, and snapshot RPC services, and drives the
+// Runtime through Init, Start, and (on SIGINT/SIGTERM) graceful Stop.
+// This is scaffold-only; behavior is unimplemented.
+package main
+
+import (
+	"context"
+	"flag"
+	"log"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"GoMultiDB/v2/server/master/catalog"
+	"GoMultiDB/v2/server/master/heartbeat"
+	"GoMultiDB/v2/server/master/registry"
+	"GoMultiDB/v2/server/master/snapshot"
+	"GoMultiDB/v2/server/master/syscatalog"
+
+	rpcpkg "GoMultiDB/v2/infra/rpc"
+	"GoMultiDB/v2/infra/storage/rocks"
+	"GoMultiDB/v2/server/server"
+	"GoMultiDB/v2/server/services/ping"
+)
+
+func main() {
+	var (
+		nodeID             = flag.String("node-id", "master-1", "node id")
+		rpcAddr            = flag.String("rpc-addr", "127.0.0.1:7100", "rpc bind address")
+		httpAddr           = flag.String("http-addr", "127.0.0.1:7000", "http bind address")
+		enableSQLProcess   = flag.Bool("enable-sql-process", false, "enable managed postgres subprocess for SQL")
+		sqlProcessRequired = flag.Bool("sql-process-required", false, "do not fall back to local SQL coordinator when process mode fails")
+		sqlDataDir         = flag.String("sql-data-dir", "/var/lib/multidb/sql", "data directory for managed SQL subprocess")
+		sqlBinPath         = flag.String("sql-bin-path", "", "path to postgres binary for managed SQL subprocess")
+		sqlInitDBPath      = flag.String("sql-initdb-path", "", "path to initdb binary for managed SQL subprocess")
+	)
+	flag.Parse()
+
+	cfg := server.DefaultConfig()
+	cfg.NodeID = *nodeID
+	cfg.RPCBindAddress = *rpcAddr
+	cfg.HTTPBindAddress = *httpAddr
+	cfg.EnableSQLProcess = *enableSQLProcess
+	cfg.SQLAllowFallbackToCoordinator = !*sqlProcessRequired
+	cfg.SQLDataDir = *sqlDataDir
+	cfg.SQLProcessBinPath = *sqlBinPath
+	cfg.SQLProcessInitDBPath = *sqlInitDBPath
+
+	rpcServer, err := rpcpkg.NewServer(rpcpkg.Config{
+		BindAddress:         cfg.RPCBindAddress,
+		StrictContractCheck: cfg.StrictContractCheck,
+	})
+	if err != nil {
+		log.Fatalf("create rpc server: %v", err)
+	}
+	if err := rpcServer.RegisterService(ping.NewService(*nodeID)); err != nil {
+		log.Fatalf("register ping service: %v", err)
+	}
+
+	// Create rocks-backed store for catalog and snapshot persistence.
+	rocksStore := rocks.NewMemoryStore()
+
+	// Initialize master catalog manager with syscatalog store.
+	sysCatalogStore := syscatalog.NewSysCatalogStore(rocksStore)
+	catalogMgr, err := catalog.NewManager(sysCatalogStore)
+	if err != nil {
+		log.Fatalf("create catalog manager: %v", err)
+	}
+
+	// Initialize heartbeat service with tablet tracking.
+	tsManager := heartbeat.NewTSManager()
+	reconcileSink := catalog.NewMemoryReconcileSink()
+	catalogMgr.SetReconcileSink(reconcileSink)
+	heartbeatSvc := heartbeat.NewService(tsManager, catalogMgr)
+
+	// Create tablet RPC registry for snapshot operations.
+	// Wrap the TSManager and reconcileSink to match registry interfaces.
+	tabletRegistry := registry.NewTabletRPCRegistry(
+		&tsManagerAdapter{tsManager: tsManager},
+		&reconcileSinkAdapter{sink: reconcileSink},
+	)
+
+	// Create runtime with tablet registry.
+	runtime, err := server.NewRuntimeWithTabletRPC(cfg, rpcServer, rocksStore, tabletRegistry)
+	if err != nil {
+		log.Fatalf("create runtime: %v", err)
+	}
+
+	// Set catalog manager as primary owner for this master (single-master mode for now).
+	catalogMgr.SetPrimary(true)
+	heartbeatSvc.SetPrimary(true)
+
+	// Register heartbeat service on RPC server.
+	if err := rpcServer.RegisterService(heartbeatSvc); err != nil {
+		log.Fatalf("register heartbeat service: %v", err)
+	}
+
+	// Register snapshot service if coordinator is enabled.
+	if snapCoord := runtime.GetSnapshotCoordinator(); snapCoord != nil {
+		if err := rpcServer.RegisterService(snapshot.NewService(snapCoord)); err != nil {
+			log.Fatalf("register snapshot service: %v", err)
+		}
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	if err := runtime.Init(ctx); err != nil {
+		log.Fatalf("runtime init: %v", err)
+	}
+	if err := runtime.Start(ctx); err != nil {
+		log.Fatalf("runtime start: %v", err)
+	}
+
+	log.Printf("master started node=%s rpc=%s", *nodeID, *rpcAddr)
+	<-ctx.Done()
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := runtime.Stop(shutdownCtx); err != nil {
+		log.Fatalf("runtime stop: %v", err)
+	}
+	log.Printf("master stopped node=%s", *nodeID)
+}
+
+// tsManagerAdapter adapts heartbeat.TSManager to registry.TSManager interface.
+type tsManagerAdapter struct {
+	tsManager *heartbeat.TSManager
+}
+
+func (a *tsManagerAdapter) Get(uuid string) (registry.TSDescriptor, bool) {
+	desc, ok := a.tsManager.Get(uuid)
+	if !ok {
+		return registry.TSDescriptor{}, false
+	}
+	return registry.TSDescriptor{
+		Instance: registry.TSInstance{
+			PermanentUUID: desc.Instance.PermanentUUID,
+			InstanceSeqNo: desc.Instance.InstanceSeqNo,
+		},
+		Registration: registry.TSRegistration{
+			RPCAddress:  desc.Registration.RPCAddress,
+			HTTPAddress: desc.Registration.HTTPAddress,
+		},
+		LastHeartbeatAt: desc.LastHeartbeatAt,
+	}, true
+}
+
+// reconcileSinkAdapter adapts catalog.MemoryReconcileSink to registry.ReconcileSink interface.
+type reconcileSinkAdapter struct {
+	sink *catalog.MemoryReconcileSink
+}
+
+func (a *reconcileSinkAdapter) GetTablet(tabletID string) (registry.TabletPlacementView, bool) {
+	view, ok := a.sink.GetTablet(tabletID)
+	if !ok {
+		return registry.TabletPlacementView{}, false
+	}
+	replicas := make(map[string]registry.TabletReplicaStatus, len(view.Replicas))
+	for k, v := range view.Replicas {
+		replicas[k] = registry.TabletReplicaStatus{
+			TSUUID:    v.TSUUID,
+			LastSeqNo: v.LastSeqNo,
+		}
+	}
+	return registry.TabletPlacementView{
+		TabletID:      view.TabletID,
+		Replicas:      replicas,
+		PrimaryTSUUID: view.PrimaryTSUUID,
+		Tombstoned:    view.Tombstoned,
+		LastUpdated:   view.LastUpdated,
+	}, true
+}

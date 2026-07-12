@@ -1,0 +1,12 @@
+go 1.23.0
+
+use (
+	./cli
+	./contracts
+	./engine
+	./gateway
+	./infra
+	./replication
+	./server
+	./test
+)
